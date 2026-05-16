@@ -1,0 +1,9 @@
+# Assignment 3: TIGER (RQ-VAE + encoder-decoder Transformer)
+# Python 3.10+; target = Google Colab T4 GPU.
+torch>=2.0.0
+numpy>=1.24.0
+pandas>=2.0.0
+matplotlib>=3.7.0
+tqdm>=4.65.0
+sentence-transformers>=2.2.2
+transformers>=4.30.0

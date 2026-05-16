@@ -1,0 +1,294 @@
+% ============================================================================
+%  TIGER on Amazon Toys and Games -- Assignment 3 Report
+%  ACM SIG Proceedings template (sigconf, double-column)
+% ============================================================================
+\documentclass[sigconf]{acmart}
+
+% Suppress ACM-specific copyright footer and reference block (course assignment)
+\settopmatter{printacmref=false,printfolios=true}
+\renewcommand\footnotetextcopyrightpermission[1]{}
+\pagestyle{plain}
+\acmConference{}{}{}
+\acmYear{}
+\acmDOI{}
+\acmISBN{}
+\acmPrice{}
+
+\definecolor{linkblue}{RGB}{30,76,138}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=linkblue,
+  citecolor=linkblue,
+  urlcolor=linkblue
+}
+
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, calc}
+
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\algrenewcommand\algorithmicrequire{\textbf{Input:}}
+\algrenewcommand\algorithmicensure{\textbf{Output:}}
+
+\usepackage{booktabs}
+
+\usepackage{titlesec}
+\titlespacing*{\section}{0pt}{0.9\baselineskip}{0.55\baselineskip}
+\titlespacing*{\subsection}{0pt}{0.75\baselineskip}{0.45\baselineskip}
+\titlespacing*{\subsubsection}{0pt}{0.65\baselineskip}{0.4\baselineskip}
+
+% ============================================================================
+\begin{document}
+
+\title{TIGER: Generative Retrieval for Next-Item Recommendation on Amazon
+       Toys and Games}
+
+\author{MohammadReza AhmadiTeshnizi}
+\affiliation{
+  \institution{Leiden University}
+  \department{MSc Computer Science}
+  \city{Leiden}
+  \country{Netherlands}
+}
+\email{m.ahmaditeshnizi@umail.leidenuniv.nl}
+
+\author{Lara Ichli}
+\affiliation{
+  \institution{Leiden University}
+  \department{MSc Computer Science}
+  \city{Leiden}
+  \country{Netherlands}
+}
+\email{l.ichli@umail.leidenuniv.nl}
+
+\author{Nithin Raju}
+\affiliation{
+  \institution{Leiden University}
+  \department{MSc Computer Science}
+  \city{Leiden}
+  \country{Netherlands}
+}
+\email{n.raju@umail.leidenuniv.nl}
+
+% ============================================================================
+\begin{abstract}
+We re-implement TIGER~\cite{rajput2023tiger}, a generative-retrieval
+sequential recommender that represents each item as a tuple of discrete
+\emph{Semantic IDs} derived from item content and uses an encoder--decoder
+Transformer to autoregressively generate the Semantic ID of the next item.
+Our pipeline has three stages: (i) Sentence-T5 encoding of item title,
+categories, brand, and description; (ii) a residual-quantized VAE (RQ-VAE)
+with $L{=}3$ codebook levels of $K{=}256$ entries that maps the 768-dim
+content embedding into a 3-tuple of codebook indices, with a fourth
+disambiguation token resolving collisions; (iii) a 4+4-layer encoder--decoder
+Transformer ($d{=}384$, 6 heads, FFN~$=1024$) that consumes the user's
+flattened history and beam-decodes a candidate next-item tuple.
+
+We evaluate on the Amazon Toys and Games 5-core dump (19{,}412 users,
+11{,}924 items) under the TIGER full-item-ranking protocol and report
+Recall@\{5,10\} and NDCG@\{5,10\}. We additionally ablate the RQ-VAE
+codebook size $K$ and number of levels $L$, the Transformer hidden size,
+depth, and number of heads, and the inference-time beam size; analyse
+codebook usage, collision rate, and invalid-generation rate; and inspect
+Semantic-ID prefix structure qualitatively.
+
+% TODO: replace placeholders with measured numbers once runs finish.
+Our default configuration attains Recall@5 $=$ \textbf{TBD}, NDCG@5 $=$
+\textbf{TBD}, Recall@10 $=$ \textbf{TBD}, NDCG@10 $=$ \textbf{TBD},
+roughly matching the assignment's expected ballpark for this dataset.
+\end{abstract}
+
+\renewcommand{\shortauthors}{AhmadiTeshnizi, Ichli, and Raju}
+
+\maketitle
+
+% ============================================================================
+\section{Introduction}
+% ============================================================================
+Sequential recommendation predicts the next item a user will interact with
+given their chronological history.  Modern systems (SASRec, BERT4Rec, etc.)
+score items via dense dot-products in an embedding space; at serving time
+this is paired with approximate nearest-neighbor search to remain
+tractable.  TIGER takes a different route: each item is assigned a tuple
+of discrete tokens (its \emph{Semantic ID}), derived from its content
+features, and an encoder--decoder Transformer autoregressively
+\emph{generates} the Semantic ID of the next item.  No ANN index is
+required, semantically similar items naturally share Semantic-ID prefixes,
+and items unseen at training time can in principle be recommended through
+their Semantic ID alone~\cite{rajput2023tiger}.
+
+In this report we re-implement TIGER on Amazon Toys and
+Games~\cite{mcauley2015image}, ablate the choices that the original paper
+sweeps over, and analyse the failure modes of generative retrieval that
+embedding-based systems do not have (invalid generations, codebook
+collapse, collision disambiguation).
+
+% ============================================================================
+\section{Method}
+% ============================================================================
+\subsection{Data preprocessing}
+We use the Amazon Toys-and-Games 5-core dump (2014
+release~\cite{mcauley2015image}). Each review is treated as an implicit
+positive interaction.  After iterative 5-core filtering converges on the
+already-filtered dump, we keep $19{,}412$ users and $11{,}924$ items with
+$167{,}597$ interactions.  We sort each user's interactions by
+\texttt{unixReviewTime}, take the last interaction as the test target,
+the second-to-last as validation, and the remaining items (capped at the
+last $T_{\text{max}}{=}20$, truncated from the left) as the training
+history.
+
+For each item we build a content sentence by concatenating its title,
+categories (flattened), brand, and a possibly-truncated description, and
+encode it with the off-the-shelf \texttt{sentence-t5-base}
+encoder~\cite{ni2022sentence}, yielding a 768-dim float vector cached
+to disk so re-runs and ablations avoid the encoding step.
+
+\subsection{RQ-VAE for Semantic IDs}
+The RQ-VAE compresses each 768-dim content vector into an $L$-tuple of
+discrete codebook indices.  An MLP encoder $f_\theta$ produces a latent
+$\mathbf{z}\in\mathbb{R}^{32}$; the residual quantizer iterates
+\[
+  c_\ell = \arg\min_{k}\Big\lVert \mathbf{r}_{\ell-1} - \mathbf{e}^\ell_k \Big\rVert^2,\quad
+  \mathbf{r}_\ell = \mathbf{r}_{\ell-1} - \mathbf{e}^\ell_{c_\ell},
+\]
+with $\mathbf{r}_0{=}\mathbf{z}$ and codebook
+$\mathbf{e}^\ell\in\mathbb{R}^{K\times 32}$.  An MLP decoder
+$g_\phi$ reconstructs the content vector from
+$\mathbf{z}_q = \sum_\ell \mathbf{e}^\ell_{c_\ell}$ via the
+straight-through estimator.  The training loss is
+\[
+  \mathcal{L} =
+  \lVert \mathbf{x} - g_\phi(\mathbf{z}_q) \rVert^2 +
+  \sum_\ell \lVert \mathrm{sg}(\mathbf{r}_{\ell-1}) - \mathbf{e}^\ell_{c_\ell} \rVert^2 +
+  \beta \sum_\ell \lVert \mathbf{r}_{\ell-1} - \mathrm{sg}(\mathbf{e}^\ell_{c_\ell}) \rVert^2,
+\]
+the standard VQ-VAE objective~\cite{vandenoord2017vqvae} with commitment
+weight $\beta{=}0.25$.  After training the encoder, decoder, and codebooks
+are frozen and one $L$-tuple is extracted per item; items that collide
+to the same $L$-tuple receive a disambiguation suffix index $0,1,2,\ldots$
+so every item has a unique $(L{+}1)$-token Semantic ID.
+
+\subsection{Generative retrieval Transformer}
+We share a single vocabulary across the $L$ codebook levels (each level
+occupying a contiguous range of $K$ token IDs) plus
+\texttt{[PAD]}/\texttt{[BOS]}/\texttt{[EOS]} specials and the
+disambiguation suffix range, for a vocabulary size of roughly
+$3 + LK + S_{\max} \approx 781$.  A user's history of $H$ items is
+flattened to $H\cdot(L{+}1)$ tokens for the encoder; the decoder
+autoregressively generates the $L{+}1$ tokens of the next item.
+
+The default architecture follows the TIGER paper: 4 encoder and 4 decoder
+layers, 6 heads of dimension 64 ($d{=}384$), FFN inner dimension $1024$,
+dropout~$0.1$, learned token and positional embeddings.  Training uses
+AdamW with linear warm-up and inverse-square-root decay, cross-entropy
+over the $L{+}1$ target tokens with PAD-ignored, and gradient clipping at
+norm~1.  At inference we use beam search with beam size~10; tuples whose
+decoded sequence does not map to any real item are counted as
+invalid generations.
+
+% ============================================================================
+\section{Experimental setup}
+% ============================================================================
+\subsection{Compute}
+RQ-VAE training and final Transformer training were run on a single Colab
+T4 GPU; preprocessing and Sentence-T5 encoding (a one-time cost) were
+performed locally on Apple-Silicon MPS.  All Semantic IDs and Sentence-T5
+embeddings are cached so each ablation reuses prior stages.
+
+\subsection{Metrics}
+We report Recall@K and NDCG@K with $K{\in}\{5,10\}$ under the full-item
+ranking protocol: items the user has already interacted with (other than
+the held-out target) are removed from the beam-decoded candidate list
+before ranking.  We additionally report
+\begin{itemize}
+\item \textbf{Codebook usage} per RQ-VAE level (fraction of codebook
+  entries used in training);
+\item \textbf{Collision rate} (fraction of items sharing an $L$-tuple
+  with at least one other item);
+\item \textbf{Invalid-generation rate} (fraction of beam outputs whose
+  $(L{+}1)$-tuple maps to no real item).
+\end{itemize}
+
+\subsection{Configurations}
+\textbf{Default.}  $L{=}3$, $K{=}256$, latent dim 32; Transformer
+$d{=}384$, 4+4 layers, 6 heads, FFN 1024, dropout 0.1; beam size 10.
+
+\textbf{Ablations.}  $K\in\{64,128,256\}$, $L\in\{2,3,4\}$, Transformer
+hidden $\in\{192,384,768\}$, depth $\in\{2,4,6\}$, beam
+$\in\{5,10,20\}$.  One-axis-at-a-time around the default.
+
+% ============================================================================
+\section{Results}
+% ============================================================================
+\subsection{Default configuration}
+% TODO: paste numbers here once tiger_default.json is in.
+\begin{table}[h]
+  \centering
+  \small
+  \caption{Default-config test metrics on Amazon Toys and Games.}
+  \label{tab:default}
+  \begin{tabular}{lcccc}
+    \toprule
+    & Recall@5 & NDCG@5 & Recall@10 & NDCG@10 \\
+    \midrule
+    TIGER (ours)    & TBD & TBD & TBD & TBD \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Ablations}
+% TODO: bar/line chart from results JSONs.
+
+\subsection{Codebook usage and collisions}
+% TODO: numbers and a figure of usage per level for K=64,128,256.
+
+\subsection{Invalid generations}
+% TODO: rate vs beam size, rate per configuration.
+
+\subsection{Qualitative analysis of Semantic IDs}
+% TODO: pick 3-5 examples of items sharing a (c1, c2) prefix and inspect
+% whether their titles/categories are semantically related.
+
+% ============================================================================
+\section{Discussion}
+% ============================================================================
+% TODO: insights -- where do invalid generations come from, when does
+% codebook collapse, does prefix structure align with category trees,
+% what would we change if we had a week longer.
+
+% ============================================================================
+\section{Conclusion}
+% ============================================================================
+% TODO: 4-6 sentences -- summarise what worked, what didn't, what's surprising.
+
+% ============================================================================
+\bibliographystyle{ACM-Reference-Format}
+\begin{thebibliography}{99}
+
+\bibitem{rajput2023tiger}
+Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Q. Tran, Jonah Samost,
+Maciej Kula, Ed H. Chi, and Maheswaran Sathiamoorthy.  Recommender Systems
+with Generative Retrieval.  In \emph{NeurIPS}, 2023.
+
+\bibitem{vandenoord2017vqvae}
+Aaron van den Oord, Oriol Vinyals, and Koray Kavukcuoglu.  Neural Discrete
+Representation Learning.  In \emph{NeurIPS}, 2017.
+
+\bibitem{ni2022sentence}
+Jianmo Ni, Gustavo Hernandez Abrego, Noah Constant, Ji Ma, Keith B. Hall,
+Daniel Cer, and Yinfei Yang.  Sentence-T5: Scalable Sentence Encoders
+from Pre-trained Text-to-Text Models.  In \emph{ACL Findings}, 2022.
+
+\bibitem{kang2018sasrec}
+Wang-Cheng Kang and Julian McAuley.  Self-Attentive Sequential
+Recommendation.  In \emph{ICDM}, 2018.
+
+\bibitem{mcauley2015image}
+Julian McAuley, Christopher Targett, Qinfeng Shi, and Anton van den Hengel.
+Image-Based Recommendations on Styles and Substitutes.  In \emph{SIGIR},
+2015.
+
+\end{thebibliography}
+
+\end{document}

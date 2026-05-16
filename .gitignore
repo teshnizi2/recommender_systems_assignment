@@ -1,0 +1,49 @@
+# Assignment 1 — MovieLens data (large; README explains download)
+Assignment 1/data/ml-1m/
+*.zip
+
+# Assignment 3 — Amazon Toys & Games + Sentence-T5 embeddings + checkpoints
+# (the notebook auto-downloads everything on Colab)
+Assignment 3/data/*.json.gz
+Assignment 3/data/cache.pkl
+Assignment 3/data/semantic_ids.npy
+Assignment 3/data/embeddings/
+Assignment 3/data/checkpoints/
+Assignment 3/data/content_log.txt
+Assignment 3/data/semantic_ids_backup/
+
+# Final Challenge — Kaggle data (download via kaggle CLI, see README)
+Final Challenge/data/*.csv
+Final Challenge/data/*.zip
+Final Challenge/results/*.csv
+Final Challenge/results/*.json
+Final Challenge/results/*.npz
+Final Challenge/results/*.pkl
+Final Challenge/.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Outputs
+*.pth
+*.pt
+*.log
+Assignment 1/report/*.aux
+Assignment 1/report/*.bbl
+Assignment 1/report/*.blg
+Assignment 1/report/*.log
+Assignment 1/report/*.out
+Assignment 1/report/*.synctex.gz

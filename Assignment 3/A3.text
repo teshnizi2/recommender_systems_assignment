@@ -1,0 +1,155 @@
+Assignment 3: TIGER (Generative Retrieval for Recommendation)
+Group: Group 15
+
+Objective
+In this assignment, you will implement a generative sequential recommendation model based on TIGER (Transformer Index for GEnerative Recommenders) to predict the next item a user will interact with. Unlike traditional embedding-based retrieval methods such as SASRec, TIGER represents each item as a tuple of discrete Semantic IDs derived from the item's content information, and uses a Transformer-based sequence-to-sequence model to autoregressively generate the Semantic ID of the next item.
+
+Your goal is to:
+- Implement the TIGER framework using PyTorch, including both the RQ-VAE for Semantic ID generation and the encoder-decoder Transformer for generative retrieval.
+- Train and evaluate the model on the Amazon Toys and Games dataset.
+- Evaluate the performance using NDCG@5, NDCG@10 and Recall@5, Recall@10.
+
+You may refer to the original paper for guidance: Rajput et al., "Recommender Systems with Generative Retrieval," NeurIPS 2023. https://arxiv.org/abs/2305.05065
+Open-source reference implementations (e.g., https://github.com/EdoardoBotta/RQ-VAE-Recommender) may be consulted, but you must implement and adapt the model yourself.
+
+Compute Environment
+This assignment is designed to be completed on Google Colab with a T4 GPU (free tier is sufficient).
+- Open a new notebook at https://colab.research.google.com
+- Runtime -> Change runtime type -> Hardware accelerator: GPU, GPU type: T4
+- Verify with !nvidia-smi (should show NVIDIA T4 with ~15 GB)
+
+Tips for Colab:
+- Mount Drive (from google.colab import drive; drive.mount('/content/drive')) to persist datasets, cached content embeddings, and model checkpoints across sessions.
+- Free tier has ~12h session limit; save checkpoints frequently.
+- If you OOM during RQ-VAE / Transformer training, reduce batch size before reducing model dims.
+- Install missing packages with !pip install ... at the top (e.g., sentence-transformers).
+- Local GPU is fine but the submitted notebook should still run on Colab T4.
+
+Dataset & Storage Setup (Google Drive)
+Before coding, upload the dataset to Drive. /content/ is wiped on session end; Drive lets you resume.
+
+One-time setup (from your computer, not Colab):
+1. Download the two Amazon Toys & Games files (links in Dataset section).
+2. In Drive, create:
+   MyDrive/
+   └── tiger_assignment/
+       ├── data/             # upload the two dataset files here
+       ├── embeddings/       # cached Sentence-T5 embeddings
+       └── checkpoints/      # RQ-VAE and Transformer checkpoints
+3. Upload the dataset files into MyDrive/tiger_assignment/data/.
+
+In every Colab session, mount Drive and read directly:
+    from google.colab import drive
+    drive.mount('/content/drive')
+    DATA_DIR = '/content/drive/MyDrive/tiger_assignment/data'
+    EMB_DIR  = '/content/drive/MyDrive/tiger_assignment/embeddings'
+    CKPT_DIR = '/content/drive/MyDrive/tiger_assignment/checkpoints'
+
+A step-by-step demo notebook is provided: Assignment3_Colab_Setup_Demo.ipynb. Start from this notebook.
+
+Dataset
+Use the Amazon Product Reviews — Toys and Games category (user reviews and item metadata).
+- https://amazon-reviews-2023.github.io/
+- 2014 version: https://jmcauley.ucsd.edu/data/amazon/
+
+You will need:
+- Reviews / interactions: userId, itemId (asin), rating, timestamp
+- Item metadata: title, description, categories, brand, price
+
+For this assignment:
+- Treat all reviews as implicit positive interactions (no rating threshold, following TIGER).
+- 5-core filtering (iteratively, until convergence).
+- Chronologically ordered sequences per user.
+- Cap max sequence length at 20 (truncate from the left if longer).
+
+Implementation Requirements
+
+1. Data Preprocessing and Content Feature Extraction (15 points)
+- Load interaction + metadata, merge on item id.
+- Iterative 5-core filtering.
+- Chronological interaction sequences per user.
+- Leave-one-out split: all but last two for training, second-to-last = val, last = test.
+- Content features: concatenate title + categories + brand + description; encode with Sentence-T5 or Sentence-BERT (e.g. 768-dim).
+
+2. RQ-VAE for Semantic ID Generation (20 points)
+- Encoder MLP: content embedding -> latent (e.g. 32-dim).
+- Residual quantizer, L levels (use L=3 as in paper), each codebook size K (use K=256).
+  - At each level: nearest codebook vector to current residual, subtract.
+  - Straight-through gradient for the codebook lookup.
+- Decoder MLP: reconstruct content embedding from sum of selected codebook vectors.
+- Loss: reconstruction + commitment + codebook (with stop-gradient as in VQ-VAE).
+- Semantic ID per item = tuple of L codebook indices; add a suffix token to disambiguate items that collide.
+- Train until reconstruction + codebook usage stabilise, then freeze and extract one Semantic ID per item.
+
+3. Generative Retrieval Transformer (20 points)
+- Flatten each user sequence into Semantic ID tokens (len = seq_len * L).
+- Shared vocabulary across all L codebook levels (+ [PAD], [BOS], [EOS], collision-disambiguation token).
+- Encoder: bidirectional Transformer over user history tokens.
+- Decoder: autoregressive Transformer generates the next item's Semantic ID tuple token-by-token.
+- Token + positional embeddings, causal masking, dropout, layer norm.
+- Standard seq2seq cross-entropy over L target tokens (+ suffix if predicted).
+
+Default config (paper):
+- 4 encoder + 4 decoder layers
+- 6 heads, dim 64 each (model dim 384)
+- FFN inner dim 1024
+- Dropout 0.1
+- Input sequence length 20 items * L tokens per item (e.g. 20*4=80 with L=3 + 1 disambiguation)
+
+Reproduce default first, then vary in the ablations (layers, hidden, heads). Report both.
+
+4. Training and Optimization (15 points)
+- AdamW; tune lr and weight decay.
+- LR warmup + decay.
+- Early stop on val NDCG@10.
+- Beam search at inference (beam ~10-20).
+- Handle invalid generations (tuples that don't map to any real item) — filter or mark as misses, and report how often they occur.
+
+5. Evaluation and Comparison (15 points)
+- Full-item ranking (not sampled negatives), TIGER protocol.
+- Recall@5, Recall@10, NDCG@5, NDCG@10.
+
+Ablations:
+- RQ-VAE codebook size K (64, 128, 256) and number of levels L (2, 3, 4).
+- Transformer hidden size, layers, heads.
+- Beam size at inference.
+
+Optional: cold-start analysis — hold out a small fraction of items from training and measure retrieval quality on them (showcases Semantic IDs).
+
+6. Experiment Report (40 points)
+2-3 page report (do not exceed 5 pages excluding References) including:
+- Dataset preprocessing, content feature construction, sequence stats.
+- RQ-VAE architecture, training curves, codebook usage / collision rate.
+- Generative Transformer architecture and training setup.
+- Evaluation results, ablations, hyper-parameter comparison.
+- Qualitative analysis: look at a few Semantic IDs, check whether items sharing a prefix are semantically related.
+- Insights, challenges (invalid generations, training stability), suggestions for improvement.
+
+Submission Requirements
+- Python source code (.py or .ipynb), organised into preprocessing / RQ-VAE / Transformer / evaluation modules; runnable on Colab T4.
+- Experiment report (.pdf), LaTeX (ACM SIG template: https://www.overleaf.com/latex/templates/association-for-computing-machinery-acm-sig-proceedings-template/bmvfhcdnxfty).
+- README.md with: dataset download, Colab setup (T4 + Drive), preprocessing reproduction, stage-1 then stage-2 training, evaluation.
+
+Grading Breakdown (100 points)
+- Data Preprocessing & Content Features: 15
+- RQ-VAE Implementation: 20
+- Generative Transformer: 20
+- Training & Optimization: 15
+- Evaluation & Comparison: 15
+- Experiment Report: 40
+Total: 100
+
+Deadline & Submission
+- Deadline: May 24th, 23:59
+- Submit via Brightspace.
+- Late penalty: 5% / day. After 7 days late: 0 points.
+
+Hints and Notes
+- Set up Drive first (folder layout + demo notebook).
+- Two-stage: train RQ-VAE to convergence, freeze, extract Semantic IDs, then train the Transformer. Do not train jointly.
+- Cache content embeddings (run sentence encoder once per item, save to Drive embeddings/).
+- Save RQ-VAE + Transformer checkpoints (plus optimizer state) to Drive checkpoints/ each epoch.
+- Toys and Games: ~19K users, ~11K items after 5-core (varies by dump). Few hours on a T4.
+- Sanity check: NDCG@5 ~ 0.03-0.04, Recall@5 ~ 0.05 with the paper default on Toys and Games (full-ranking). If you're orders of magnitude off, recheck eval protocol and collision handling before tuning.
+
+Brightspace: https://brightspace.universiteitleiden.nl/d2l/le/lessons/388658/topics/3911713
