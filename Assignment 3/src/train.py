@@ -95,9 +95,9 @@ def train_rqvae(content: np.ndarray, tag: str = "rqvae",
     # -- Phase 0: initialize content_mean buffer ------------------------------
     full = torch.from_numpy(content[1:]).float().to(device)
     model.initialize_content_stats(full)
+    cm = model.content_mean.detach()
+    centered_std = (full - cm).std(dim=0).mean().item()
     if verbose:
-        cm = model.content_mean.detach()
-        centered_std = (full - cm).std(dim=0).mean().item()
         print(f"[rqvae] content_mean ||={cm.norm().item():.4f}  "
               f"centered_var={((full - cm) ** 2).sum(-1).mean().item():.4f}  "
               f"centered per-dim std={centered_std:.4f}")
@@ -236,46 +236,50 @@ class _SeqDataset(Dataset):
 
     For a user with chronological items [i_1, ..., i_H] (history = train_seqs[u]) we
     produce H-1 training instances: (history[:k], history[k]) for k=1..H-1.
-    Each instance becomes (src tokens, target tokens).
+
+    To keep __getitem__ near-zero-cost (data loading was the bottleneck — the
+    first version reshaped/concatenated per call and serialized through
+    num_workers=0), all source/target tensors are pre-tokenized and stacked into
+    contiguous numpy arrays at __init__ time. __getitem__ then just slices.
     """
     def __init__(self, train_seqs: list[list[int]], item_tokens: np.ndarray,
                   vocab: Vocab, max_seq_len: int = config.MAX_LEN) -> None:
-        self.item_tokens = item_tokens                          # (n_items+1, L+1)
-        self.vocab = vocab
         self.tokens_per_item = item_tokens.shape[1]             # L+1
         self.src_len = max_seq_len * self.tokens_per_item
-        self.examples: list[tuple[np.ndarray, int]] = []
+
+        n_examples = sum(max(len(seq) - 1, 0) for seq in train_seqs)
+        L1 = self.tokens_per_item
+        src_arr = np.zeros((n_examples, self.src_len), dtype=np.int64)
+        tgt_in_arr = np.zeros((n_examples, L1), dtype=np.int64)
+        tgt_out_arr = np.zeros((n_examples, L1), dtype=np.int64)
+
+        i = 0
         for seq in train_seqs:
             for k in range(1, len(seq)):
                 history = seq[max(0, k - max_seq_len):k]
                 target = seq[k]
-                self.examples.append((np.array(history, dtype=np.int64), target))
+                tokens = item_tokens[np.array(history, dtype=np.int64)].reshape(-1)
+                # right-aligned, left-padded
+                src_arr[i, -tokens.shape[0]:] = tokens
+                tgt_full = item_tokens[target]
+                tgt_in_arr[i, 0] = config.BOS
+                tgt_in_arr[i, 1:] = tgt_full[:-1]
+                tgt_out_arr[i] = tgt_full
+                i += 1
+        self.src = torch.from_numpy(src_arr)
+        self.tgt_in = torch.from_numpy(tgt_in_arr)
+        self.tgt_out = torch.from_numpy(tgt_out_arr)
+        # Keep a tiny `examples` view so train_transformer's debug subsetting
+        # (`--max_train_examples`) still works without rebuilding the dataset.
+        self.examples = list(range(n_examples))
 
     def __len__(self) -> int:
         return len(self.examples)
 
-    def _flatten(self, items: np.ndarray) -> np.ndarray:
-        # items: (h,) item ids -> (h*(L+1),) token ids
-        rows = self.item_tokens[items]                          # (h, L+1)
-        return rows.reshape(-1)
-
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        history, target = self.examples[idx]
-        src_tokens = self._flatten(history)
-        # left-pad src to fixed length
-        if src_tokens.shape[0] < self.src_len:
-            pad = np.zeros(self.src_len - src_tokens.shape[0], dtype=np.int64)
-            src_tokens = np.concatenate([pad, src_tokens], axis=0)
-        else:
-            src_tokens = src_tokens[-self.src_len:]
-        tgt_full = self.item_tokens[target]                     # (L+1,)
-        tgt_in = np.concatenate([[config.BOS], tgt_full[:-1]], axis=0)
-        tgt_out = tgt_full
-        return (
-            torch.from_numpy(src_tokens).long(),
-            torch.from_numpy(tgt_in).long(),
-            torch.from_numpy(tgt_out).long(),
-        )
+        # idx through `examples` so subsetting still applies
+        i = self.examples[idx] if isinstance(self.examples[idx], int) else idx
+        return self.src[i], self.tgt_in[i], self.tgt_out[i]
 
 
 def train_transformer(train_seqs: list[list[int]],
@@ -319,7 +323,8 @@ def train_transformer(train_seqs: list[list[int]],
     if verbose:
         print(f"[tiger] training examples: {len(ds):,}")
 
-    loader = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=0, drop_last=True)
+    loader = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=0,
+                         drop_last=True, pin_memory=(device.type == "cuda"))
 
     model = TigerTransformer(
         vocab_size=vocab.size,

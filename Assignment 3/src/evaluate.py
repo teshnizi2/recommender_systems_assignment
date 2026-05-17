@@ -25,27 +25,24 @@ from . import config
 # --------------------------------------------------------------------------- #
 class _EvalDataset(Dataset):
     def __init__(self, histories, item_tokens, max_seq_len: int):
-        self.histories = histories
-        self.item_tokens = item_tokens
-        self.tokens_per_item = item_tokens.shape[1]
-        self.src_len = max_seq_len * self.tokens_per_item
+        tokens_per_item = item_tokens.shape[1]
+        src_len = max_seq_len * tokens_per_item
+        n = len(histories)
+        arr = np.zeros((n, src_len), dtype=np.int64)
+        for i, hist in enumerate(histories):
+            if not hist:
+                continue
+            rows = item_tokens[np.array(hist, dtype=np.int64)].reshape(-1)
+            if rows.shape[0] > src_len:
+                rows = rows[-src_len:]
+            arr[i, -rows.shape[0]:] = rows
+        self.src = torch.from_numpy(arr)
 
     def __len__(self) -> int:
-        return len(self.histories)
+        return self.src.shape[0]
 
     def __getitem__(self, i: int) -> torch.Tensor:
-        hist = self.histories[i]
-        if len(hist) == 0:
-            tokens = np.zeros(self.src_len, dtype=np.int64)
-        else:
-            rows = self.item_tokens[np.array(hist, dtype=np.int64)]
-            tokens = rows.reshape(-1)
-            if tokens.shape[0] < self.src_len:
-                pad = np.zeros(self.src_len - tokens.shape[0], dtype=np.int64)
-                tokens = np.concatenate([pad, tokens], axis=0)
-            else:
-                tokens = tokens[-self.src_len:]
-        return torch.from_numpy(tokens).long()
+        return self.src[i]
 
 
 # --------------------------------------------------------------------------- #
@@ -100,7 +97,8 @@ def evaluate_transformer(model, histories, targets, user_full_seqs, item_tokens,
         targets = [targets[i] for i in keep]
         user_full_seqs = [user_full_seqs[i] for i in keep]
     ds = _EvalDataset(histories, item_tokens, max_seq_len=config.MAX_LEN)
-    loader = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=0)
+    loader = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=0,
+                         pin_memory=(getattr(device, "type", "cpu") == "cuda"))
 
     seq_len = vocab.levels + 1
     metrics_sum = {f"recall@{k}": 0.0 for k in ks}
