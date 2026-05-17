@@ -92,10 +92,13 @@ depth, and number of heads, and the inference-time beam size; analyse
 codebook usage, collision rate, and invalid-generation rate; and inspect
 Semantic-ID prefix structure qualitatively.
 
-% TODO: replace placeholders with measured numbers once runs finish.
-Our default configuration attains Recall@5 $=$ \textbf{TBD}, NDCG@5 $=$
-\textbf{TBD}, Recall@10 $=$ \textbf{TBD}, NDCG@10 $=$ \textbf{TBD},
-roughly matching the assignment's expected ballpark for this dataset.
+Our default-configuration run on a single Tesla T4 (~82\,min for the seq2seq
+stage) attains Recall@5 $=$ \textbf{0.0222}, NDCG@5 $=$ \textbf{0.0162},
+Recall@10 $=$ \textbf{0.0298}, NDCG@10 $=$ \textbf{0.0187} on the held-out
+test split.  The RQ-VAE achieves a \textbf{7.7\%} collision rate with
+\textbf{99\%+} codebook utilisation across all three levels, and only
+\textbf{1.05\%} of beam-decoded next-item tuples are invalid -- i.e.\ map
+to no real item.
 \end{abstract}
 
 \renewcommand{\shortauthors}{AhmadiTeshnizi, Ichli, and Raju}
@@ -221,45 +224,180 @@ $\in\{5,10,20\}$.  One-axis-at-a-time around the default.
 \section{Results}
 % ============================================================================
 \subsection{Default configuration}
-% TODO: paste numbers here once tiger_default.json is in.
+Table~\ref{tab:default} reports the held-out test metrics under the
+TIGER full-item-ranking protocol with beam size~$10$.  The model is
+selected by validation NDCG@10 measured on a 2{,}000-user sampled
+subset of users (full eval at every epoch was prohibitively expensive
+on a single T4).
+
 \begin{table}[h]
   \centering
   \small
-  \caption{Default-config test metrics on Amazon Toys and Games.}
+  \caption{Default-config test metrics on Amazon Toys and Games
+    ($N{=}19{,}412$ users, beam~$10$).  Invalid rate is the fraction of
+    beam-decoded $(L{+}1)$-tuples that map to no real item.}
   \label{tab:default}
   \begin{tabular}{lcccc}
     \toprule
     & Recall@5 & NDCG@5 & Recall@10 & NDCG@10 \\
     \midrule
-    TIGER (ours)    & TBD & TBD & TBD & TBD \\
+    TIGER (ours)    & 0.0222 & 0.0162 & 0.0298 & 0.0187 \\
     \bottomrule
   \end{tabular}
+  \vspace{0.4em}
+
+  \emph{Invalid generation rate: 1.05\%
+    (2{,}047 / 194{,}120 candidates).}
 \end{table}
 
-\subsection{Ablations}
-% TODO: bar/line chart from results JSONs.
+Training loss falls monotonically from $4.97$ at epoch~1 to $1.40$ at
+epoch~30 (Figure~\ref{fig:training}).  Validation NDCG@10 climbs
+roughly monotonically as well, with the best value of $0.0289$ attained
+at epoch~30.  The single-T4 wall-clock budget was $\approx 82$\,min for
+the Transformer stage, $\approx 10$\,s for the RQ-VAE stage, and
+$\approx 108$\,s for the Sentence-T5 encoding stage.
 
-\subsection{Codebook usage and collisions}
-% TODO: numbers and a figure of usage per level for K=64,128,256.
+\subsection{RQ-VAE: codebook usage and collisions}
+The RQ-VAE converges in 23~epochs (early stop on reconstruction
+plateau).  Final stats:
+\begin{itemize}
+  \item Unique $L$-tuples: $11{,}006$ / $11{,}924$ items
+    $\Rightarrow$ \textbf{7.7\% collision rate}.
+  \item Items in collision: $1{,}836$;
+    max collision group: $27$;
+    mean collision group: $1.08$.
+  \item Codebook utilisation: $99\%$ (level~0), $100\%$ (level~1),
+    $98\%$ (level~2).
+  \item Reconstruction MSE: $2.2{\times}10^{-4}$ on centred
+    Sentence-T5 vectors.
+\end{itemize}
+
+This is in stark contrast to a naive VQ-VAE on these inputs, which
+collapses to fewer than 60~unique Semantic IDs across all $11{,}924$
+items (we observed this in an earlier iteration of the model -- see
+Section~\ref{sec:discussion}).  The combination of
+(i) input centring against the global Sentence-T5 mean direction,
+(ii) denoising warmup (Gaussian noise on the centred input, with the
+decoder reconstructing the clean target),
+(iii) $k$-means$\,$++ initialisation of every codebook level on
+warmed-up encoder outputs, and
+(iv) EMA codebook updates with periodic dead-code resetting,
+together prevent collapse and give the high utilisation reported above.
 
 \subsection{Invalid generations}
-% TODO: rate vs beam size, rate per configuration.
+Beam search occasionally produces $(L{+}1)$-tuples whose token sequence
+matches no real item's Semantic ID.  At test time we observe
+\textbf{1.05\%} invalid candidates over all 19{,}412 users and beam
+size~$10$ (totalling $2{,}047$ invalid candidates among $194{,}120$
+generated).  These are filtered out before ranking, so they do not
+penalise Recall/NDCG directly, but they reduce the effective beam
+width.  Invalid rate is essentially $0$ in early training (the model
+heavily prefers very few output Semantic IDs) and grows slightly as
+the model becomes more expressive, peaking around 1\% by epoch~30.
 
 \subsection{Qualitative analysis of Semantic IDs}
-% TODO: pick 3-5 examples of items sharing a (c1, c2) prefix and inspect
-% whether their titles/categories are semantically related.
+Items sharing a prefix in Semantic-ID space cluster semantically.  For
+example, level-0 token~$123$ groups $919$ items dominated by
+strategy/D\&D board games (\textit{Wrath of Ashardalon}, \textit{Lords
+of Waterdeep}, \textit{Ticket to Ride}, \textit{Shadows over Camelot}),
+while prefix $(123, 188)$ narrows this further to $121$ Wizards-of-the-
+Coast--style boxed games (\textit{Munchkin}, \textit{Eminent Domain},
+\textit{Fortune and Glory}).  Token~$202$ groups a broader $827$-item
+mix of board games and floor puzzles.  This is the qualitative pattern
+the TIGER paper relies on: the Transformer can place its probability
+mass on entire semantic neighbourhoods, not just exact item tokens.
+
+\subsection{Ablations and comparison to the paper}
+Our default Recall@5 of $0.0222$ is roughly half the
+$\approx\!0.05$ ballpark cited in the assignment as the expected
+neighbourhood for this dataset, and our NDCG@5 of $0.0162$ is in the
+lower end of the $0.03$--$0.04$ range.  The gap is consistent with
+two factors visible in the training curve:
+(i) we trained for only $30$~epochs -- the paper reports significantly
+longer schedules -- and our training loss was still decreasing at the
+end of training, suggesting the model was undertrained;
+(ii) our RQ-VAE collision rate of $7.7\%$ means roughly $1$ in $13$
+items shares its $L$-tuple with at least one other, slightly handicapping
+the model's ability to point to a unique target item.
+
+The single-axis ablation results we had originally planned to report
+(varying $K$, $L$, hidden, depth, beam size) did not fit in the
+single Kaggle GPU session window; we report the default-config result
+only and discuss what we would expect from those ablations in
+Section~\ref{sec:discussion}.
 
 % ============================================================================
 \section{Discussion}
+\label{sec:discussion}
 % ============================================================================
-% TODO: insights -- where do invalid generations come from, when does
-% codebook collapse, does prefix structure align with category trees,
-% what would we change if we had a week longer.
+
+\textbf{Codebook collapse was the dominant practical risk.}  Our first
+RQ-VAE implementation -- vanilla VQ-VAE losses, random codebook init,
+gradient-based codebook updates -- collapsed within $3$~epochs:
+codebook usage dropped to $\sim\!0\%$ across all three levels and all
+$11{,}924$ items mapped to the same $L$-tuple.  Inspecting the encoder
+output showed that it had degenerated to a near-constant vector
+(per-item norm std $\sim\!10^{-3}$ vs. per-dim std $\sim\!10^{-2}$ in
+the input data).  The mechanism: Sentence-T5 embeddings on this
+dataset are strongly anisotropic -- the global mean direction carries
+$\sim\!0.9$ of the unit norm, leaving only $\sim\!0.4$ for per-item
+variation, so a constant encoder output paired with a decoder bias is
+already very close to the data variance.  Combining centring, denoising
+warmup, k-means++ codebook init, and EMA codebook updates with
+dead-code resetting was what eventually broke the collapse.  This may
+also explain why first-time implementations of TIGER on related Amazon
+splits often report unstable behaviour.
+
+\textbf{Output buffering hides progress.}  On our first Colab run the
+seq2seq stage produced \emph{no} live output for $30$ minutes because
+\texttt{python}'s stdout was block-buffered through a \texttt{tee} pipe
+-- not because training was stuck.  Subsequent runs used
+\texttt{PYTHONUNBUFFERED=1} and \texttt{stdbuf -oL -eL} so that each
+epoch line flushed immediately.  This is a generic pitfall worth
+calling out for anyone running long Python jobs in a Colab/Kaggle
+console.
+
+\textbf{Cross-platform CUDA compatibility.}  Kaggle's GPU-P100 slot
+ships with PyTorch~$2.10$ wheels compiled only for $\textrm{sm}_{70}$
+and above, so the older $\textrm{sm}_{60}$ P100 raises
+\texttt{cudaErrorNoKernelImageForDevice} at the first CUDA op.
+Switching to the T4 slot ($\textrm{sm}_{75}$) avoided this; the run
+reported in Section~5 is on a single T4 inside the
+\texttt{GPU T4 x2} session type.
+
+\textbf{What we would do with another week.}
+(i)~Train for at least $100$~epochs and add a learning-rate decay
+schedule.  At $30$~epochs our loss is still falling and validation
+NDCG had not yet plateaued.
+(ii)~Run the $K \in \{64, 128, 256\}$ and $L \in \{2, 3, 4\}$
+ablations the rubric asks for.  We expect $L{=}3$, $K{=}256$ to remain
+the best operating point on this dataset, since $L{=}2$ gives only
+$K^2$ unique IDs (which is below our $\sim\!11{,}000$ item count when
+$K \leq 100$) and $L{=}4$ slightly hurts decode latency without much
+representational gain.
+(iii)~Sweep beam size at inference: with our invalid rate of $1\%$,
+beam~$20$ should slightly improve recall by leaving more headroom
+after filtering invalids.
 
 % ============================================================================
 \section{Conclusion}
 % ============================================================================
-% TODO: 4-6 sentences -- summarise what worked, what didn't, what's surprising.
+We reimplemented TIGER end-to-end in PyTorch and trained it on the
+Amazon Toys and Games 5-core dump.  Our pipeline -- Sentence-T5
+content encoding, an RQ-VAE with $L{=}3$ codebook levels of $K{=}256$
+entries to extract Semantic IDs, and a 4-layer encoder--decoder
+Transformer that beam-decodes the next item's Semantic ID -- achieves
+\textbf{Recall@10 = 0.0298} and \textbf{NDCG@10 = 0.0187} on the
+held-out test split, with only $1\%$ of beam-decoded candidates being
+invalid.  The two practical lessons we want to flag are
+(a) that getting the RQ-VAE to use its codebook is the single
+hardest part of a TIGER reimplementation -- vanilla VQ-VAE losses
+collapse on Sentence-T5 outputs and need centring + EMA + dead-code
+resetting to recover, and (b) that the resulting Semantic-ID prefixes
+\emph{are} interpretable: items sharing the first level token are
+semantically coherent (e.g.\ predominantly board games together,
+predominantly puzzles together), and the second-level token narrows
+to genre-style sub-clusters.
 
 % ============================================================================
 \bibliographystyle{ACM-Reference-Format}

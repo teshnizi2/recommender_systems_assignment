@@ -1,0 +1,71 @@
+{
+  "args": {
+    "stage": "tiger",
+    "tag": "tiger_default",
+    "rqvae_tag": "rqvae_default",
+    "tiger_tag": "tiger_default",
+    "rq_levels": 3,
+    "rq_codebook_size": 256,
+    "rq_latent_dim": 32,
+    "t_hidden": 384,
+    "t_heads": 6,
+    "t_layers": 4,
+    "t_ffn": 1024,
+    "t_dropout": 0.1,
+    "t_lr": 0.001,
+    "t_batch_size": 256,
+    "t_epochs": 30,
+    "beam_size": 10,
+    "eval_every": 3,
+    "eval_max_users": 2000
+  },
+  "tiger_history": {
+    "train_loss": [
+      4.9684, 3.4334, 2.9788, 2.7177, 2.5535, 2.4455, 2.3653, 2.3004,
+      2.2496, 2.2049, 2.1632, 2.1200, 2.0800, 2.0412, 1.9983, 1.9541,
+      1.9123, 1.8739, 1.8332, 1.7962, 1.7608, 1.7288, 1.6959, 1.6683,
+      1.6380, 1.6121, 1.5820, 1.5268, 1.4622, 1.3972
+    ],
+    "val_ndcg10_every3": [
+      0.00441, 0.01050, 0.01545, 0.01854, 0.01788, 0.02410, 0.02306,
+      0.02060, 0.02072, 0.02888
+    ],
+    "val_recall10_every3": [
+      0.0075, 0.0165, 0.0250, 0.0300, 0.0290, 0.0365, 0.0360,
+      0.0340, 0.0340, 0.0395
+    ],
+    "epoch_time_sec_avg": 158.5,
+    "best_val_ndcg10": 0.02888,
+    "best_val_epoch": 30
+  },
+  "rqvae_stats": {
+    "n_items": 11924,
+    "unique_tuples": 11006,
+    "collision_rate": 0.0770,
+    "items_in_collision": 1836,
+    "max_collision_group": 27,
+    "mean_collision_group": 1.083,
+    "best_recon_loss": 0.00022,
+    "early_stop_epoch": 23,
+    "codebook_usage_level0": 0.99,
+    "codebook_usage_level1": 1.00,
+    "codebook_usage_level2": 0.98
+  },
+  "test": {
+    "recall@5":  0.02215124665155574,
+    "recall@10": 0.029826911188955287,
+    "ndcg@5":    0.016171357475594388,
+    "ndcg@10":   0.01869253372358048,
+    "invalid_rate": 0.010545023696682124,
+    "invalid_total": 2047,
+    "n_users": 19412,
+    "beam_size": 10
+  },
+  "compute": {
+    "gpu": "Tesla T4 (Kaggle 2x T4 slot, single-GPU run)",
+    "torch": "2.10.0+cu128",
+    "encode_wall_time_sec": 107.6,
+    "rqvae_wall_time_sec":   9.0,
+    "tiger_wall_time_sec":  4919.1
+  }
+}
