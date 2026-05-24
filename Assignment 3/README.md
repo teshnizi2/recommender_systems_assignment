@@ -66,9 +66,9 @@ Drop both files into `tiger_assignment/data/` next to the notebook.
 
 ## Default config (matches the TIGER paper)
 
-- RQ-VAE: 768-dim Sentence-T5 → encoder MLP → 32-dim latent, $L{=}3$ codebook levels of $K{=}256$ entries, disambiguation suffix for collisions, VQ-VAE-style commitment loss with EMA codebook updates (the gradient-based variant collapses on Sentence-T5 outputs — see report §5).
-- Transformer: 4 encoder + 4 decoder layers, 6 heads × 64 = model dim 384, FFN 1024, dropout 0.1.
-- Input length: 20 history items × (L + 1 suffix) = 80 tokens. AdamW, linear warmup + inverse-sqrt decay, cross-entropy. Beam size 20 at inference.
+- **RQ-VAE.** 768-dim Sentence-T5 → encoder MLP → 32-dim latent, $L{=}3$ codebook levels of $K{=}256$ entries, disambiguation suffix for collisions, VQ-VAE commitment loss ($\beta{=}0.25$) with EMA codebook updates.
+- **Transformer.** 4 encoder + 4 decoder layers, 6 heads × 64 = model dim 384, FFN 1024, dropout 0.1.
+- **Input.** 20 history items × (L+1 = 4 tokens per item) = 80 input tokens. AdamW optimiser, linear warmup + inverse-sqrt LR decay, cross-entropy. Beam size 20 at inference.
 
 ## Ablations included in the report
 
@@ -83,13 +83,13 @@ Bold = default config. See report Table 2 and Figure 3.
 
 ## Notes from the implementation
 
-- **Codebook collapse on Sentence-T5.** Vanilla VQ-VAE losses collapse the encoder to a constant within 3 epochs because Sentence-T5 outputs are anisotropic (mean direction carries ~0.9 of the unit norm, per-item variation only ~0.4). The fix in the notebook (cell 4, `VectorQuantizer` + `RQVAE`): input centring against the global Sentence-T5 mean, denoising warmup, k-means++ codebook init on warmed-up encoder outputs, EMA codebook updates with dead-code resetting. After the fix we get ≥ 97% codebook utilisation and ~11k unique Semantic IDs across 11.9k items.
-- **Don't joint-train.** RQ-VAE to convergence first, then freeze and extract Semantic IDs, then train the Transformer.
-- **Output buffering hides progress.** Long Python training jobs through `tee` or piped to a Colab/Kaggle console block-buffer stdout. The notebook avoids `tee` for the Transformer cell; if you re-run from a shell, prefix with `PYTHONUNBUFFERED=1 stdbuf -oL -eL python -u`.
-- **Cache content embeddings.** Sentence-T5 over ~11K items is ~3 min on T4. The cached `.npy` is reused by every RQ-VAE/Transformer rerun.
+- **Stage the training.** Train the RQ-VAE to convergence first, freeze it, extract one Semantic ID per item, then train the Transformer on those IDs. Joint training does not work — the paper is explicit about this and the notebook follows the same pattern.
+- **Keep the codebook alive.** Sentence-T5 outputs on this dataset are strongly anisotropic, which makes a gradient-based VQ-VAE prone to collapsing. The `VectorQuantizer` in the notebook uses EMA codebook updates and the VQ-VAE commitment loss ($\beta = 0.25$), with a small uniform codebook initialisation; this keeps all three levels live throughout training (≥ 97% utilisation by the time the loss plateaus).
+- **Cache content embeddings.** Sentence-T5 over ~12K items is ~3 min on T4. The cached embeddings are reused by every RQ-VAE/Transformer rerun, which is what makes the 8-config ablation suite tractable.
+- **Done-flags for restart safety.** Each ablation run drops a `*_done.flag` file in `tiger_assignment/checkpoints/` on completion. Re-running the notebook skips configs that already have a flag, so a Kaggle session disconnect mid-sweep is recoverable without re-running everything.
 
 ## What we'd do with another week
 
-1. Multiple seeds — some of the gaps in the ablation table are within plausible seed noise; an averaged-over-seeds version would let us claim what is significant.
-2. A learning-rate decay schedule (cosine with longer warmup) — even at the early-stop point training loss is still decreasing.
-3. Cold-start eval — hold out a fraction of items from training entirely and measure whether the Transformer can still recover them through Semantic-ID prefix similarity. This is the headline advantage of TIGER over embedding-based retrievers, and we did not have time to evaluate it on this dataset.
+1. **Multiple seeds.** Some of the gaps in the ablation table are within plausible seed noise; an averaged-over-seeds version would let us claim which differences are significant.
+2. **A cosine LR schedule.** We use linear warmup then inverse-square-root decay; a cosine schedule with a longer warmup is the more standard choice for sequence models of this size and might push Recall@5 closer to the paper's published numbers.
+3. **Cold-start eval.** Hold out a fraction of items from training entirely and measure whether the Transformer can still recover them through Semantic-ID prefix similarity. This is the headline advantage of TIGER over embedding-based retrievers and we did not have time to evaluate it on this dataset.
