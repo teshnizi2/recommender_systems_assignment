@@ -8,71 +8,38 @@ cd "Assignment 3"
 
 Reza, Lara, Nithin — Group 15, RS course 2025/26.
 
-We're implementing TIGER (Rajput et al., NeurIPS 2023) — a generative sequential recommender that represents each item as a tuple of discrete **Semantic IDs** and trains an encoder-decoder Transformer to autoregressively generate the Semantic ID of the next item, instead of scoring items in an embedding space the way SASRec (A2) did.
+We implement TIGER (Rajput et al., NeurIPS 2023) — a generative sequential recommender that represents each item as a tuple of discrete **Semantic IDs** and trains an encoder-decoder Transformer to autoregressively generate the Semantic ID of the next item, instead of scoring items in an embedding space the way SASRec (A2) did.
 
-Two stages:
-1. **RQ-VAE** quantizes each item's Sentence-T5 content embedding into an `L`-tuple of codebook indices (the Semantic ID). Train it on item content, freeze, dump one Semantic ID per item.
-2. **Encoder-decoder Transformer** takes the flattened Semantic ID tokens of a user's history and generates the next item's `L`-tuple token by token. Beam search at inference.
+Three stages:
+1. **Sentence-T5** content encoding — concatenate each item's title + categories + brand + description and run through `sentence-t5-base` to get a 768-dim content vector. Cached to disk.
+2. **RQ-VAE** quantizes each content vector into an `L`-tuple of codebook indices (the Semantic ID). Train it on item content, freeze, dump one Semantic ID per item.
+3. **Encoder-decoder Transformer** takes the flattened Semantic ID tokens of a user's history and generates the next item's `L`-tuple token by token. Beam search at inference (beam = 10).
 
-Dataset: **Amazon Toys & Games** (interactions + metadata). Implicit positives, iterative 5-core filtering, leave-one-out (last → test, second-to-last → val), max history 20 items. Eval is full-item ranking, Recall@{5,10} and NDCG@{5,10}.
+Dataset: **Amazon Toys & Games (2014 5-core dump)**. Implicit positives, iterative 5-core filtering, leave-one-out split (last → test, second-to-last → val), max history 20 items. Eval is full-item ranking, Recall@{5,10} and NDCG@{5,10}, with already-seen items filtered out before ranking.
 
-## Status
+## Results
 
-Scaffold only. `main.py` and the modules under `src/` are stubs. We've laid out the file structure to mirror A1/A2; implementation TBD.
+Final default-config test metrics (single seed, beam = 10):
 
-Deadline: **24 May 23:59** (Brightspace).
+| Metric | Value |
+|---|---|
+| Recall@5 | 0.0210 |
+| NDCG@5   | 0.0150 |
+| Recall@10 | 0.0276 |
+| NDCG@10  | 0.0172 |
+| Invalid generation rate | 0.17 % |
 
-## Compute target — Colab T4
+RQ-VAE: 7.7 % collision rate (11 006 / 11 924 unique L-tuples), 99 %+ codebook utilisation across all three levels, reconstruction MSE 2.2×10⁻⁴ on centred Sentence-T5 vectors.
 
-This one's heavier than A1/A2 (sentence encoder + RQ-VAE + seq2seq Transformer), so we're running it on Colab with a T4 GPU (free tier):
+See `report/report.pdf` for the full write-up.
 
-1. Open https://colab.research.google.com → new notebook.
-2. Runtime → Change runtime type → GPU → T4.
-3. Verify with `!nvidia-smi` (should show NVIDIA T4, ~15 GB).
+## Compute
 
-Local GPU is fine, but the submitted notebook should still run on Colab T4.
+We trained on two paths:
+- **Kaggle T4 (×2 slot, single GPU used)** — final reported run. ~108 s for Sentence-T5 encoding, ~9 s for RQ-VAE, ~82 min for 30 Transformer epochs.
+- **Local Apple-Silicon MPS** — sanity-check run + ablation iteration on the smaller pieces. Sentence-T5 encoding ~15 min, RQ-VAE ~100 s, Transformer too slow to use for the full 30-epoch schedule (~7 h).
 
-## Drive layout (one-time setup)
-
-Colab's `/content/` is wiped at session end. Keep dataset, cached embeddings, and checkpoints on Drive so we don't repeat the expensive bits:
-
-```
-MyDrive/
-└── tiger_assignment/
-    ├── data/          # raw Amazon Toys & Games files
-    ├── embeddings/    # cached Sentence-T5 embeddings
-    └── checkpoints/   # RQ-VAE + Transformer checkpoints (per epoch)
-```
-
-In every Colab session:
-
-```python
-from google.colab import drive
-drive.mount('/content/drive')
-DATA_DIR = '/content/drive/MyDrive/tiger_assignment/data'
-EMB_DIR  = '/content/drive/MyDrive/tiger_assignment/embeddings'
-CKPT_DIR = '/content/drive/MyDrive/tiger_assignment/checkpoints'
-```
-
-## Dataset
-
-Amazon Product Reviews — Toys & Games category. We need both:
-
-- Reviews / interactions: `userId, itemId (asin), rating, timestamp`
-- Item metadata: title, description, categories, brand, price
-
-Sources:
-- https://amazon-reviews-2023.github.io/ (2023 dump)
-- https://jmcauley.ucsd.edu/data/amazon/ (2014 dump)
-
-Preprocessing (in `src/dataset.py`):
-- Merge interactions + metadata on item id.
-- Treat every review as a positive interaction (TIGER protocol — no rating threshold).
-- Iterative **5-core filtering** until convergence.
-- Build per-user chronological sequences; cap length at 20 (truncate left).
-- Leave-one-out split: all but last two → train, second-to-last → val, last → test.
-
-Expected scale after 5-core: ~19K users, ~11K items (varies by dump).
+Free Colab T4 was hit-or-miss with disconnects mid-session; Kaggle's 30-hour weekly GPU quota was a more reliable home. Kaggle's GPU-P100 slot rejects PyTorch 2.10 (sm_60 dropped), so stick with the T4 slot.
 
 ## Requirements
 
@@ -80,64 +47,67 @@ Expected scale after 5-core: ~19K users, ~11K items (varies by dump).
 pip install -r requirements.txt
 ```
 
-The big extra deps vs. A1/A2 are `sentence-transformers` (for Sentence-T5 content embeddings) and `transformers` (in case we use HuggingFace utilities). PyTorch as before.
+PyTorch ≥ 2, sentence-transformers, transformers, pandas/numpy, matplotlib, tqdm.
 
-## How to run (planned)
+## How to run
 
 ```bash
-# Stage 0 — preprocess + cache Sentence-T5 content embeddings (once per dump)
-python main.py --stage embed   --no_download
+# Stage 0 — preprocess + cache Sentence-T5 content embeddings (one-time)
+python main.py --stage embed --tag embed
 
 # Stage 1 — train RQ-VAE on cached embeddings, dump one Semantic ID per item
-python main.py --stage rqvae   --rq_levels 3 --rq_codebook_size 256
+python main.py --stage rqvae --tag rqvae_default --rqvae_tag rqvae_default \
+    --rq_levels 3 --rq_codebook_size 256 --rq_latent_dim 32
 
-# Stage 2 — train the generative Transformer on Semantic ID sequences
-python main.py --stage tiger   --num_layers 4 --num_heads 6 --hidden 384
-
-# Evaluation (full ranking, beam search) is appended to each training run's JSON
+# Stage 2 — train the generative Transformer + final test eval (beam 10, full ranking)
+python main.py --stage tiger --tag tiger_default --tiger_tag tiger_default \
+    --t_hidden 384 --t_heads 6 --t_layers 4 --t_ffn 1024 --t_dropout 0.1 \
+    --t_lr 1e-3 --t_batch_size 256 --t_epochs 30 --beam_size 10 \
+    --eval_every 5 --eval_max_users 1500
 ```
 
-`run_experiments.py` will wrap the default config + the ablations we report on (codebook size `K`, levels `L`, Transformer depth/width, beam size).
+Each stage writes a JSON to `results/<tag>.json`. The dataset is auto-downloaded into `data/` on first run, or you can drop the two `.json.gz` files (reviews_Toys_and_Games_5 + meta_Toys_and_Games) there yourself.
 
-## Planned default config (from the paper)
+For Colab/Kaggle, the same commands run unchanged — `notebook.ipynb` wraps the clone + install + dataset download + the three stages. On Colab set Runtime → T4 first; on Kaggle Session options → Accelerator → GPU T4 ×2.
 
-- RQ-VAE: encoder MLP → 32-dim latent, `L=3` codebook levels of size `K=256`, suffix token for collisions, standard VQ-VAE losses (reconstruction + commitment + codebook, stop-gradient).
-- Transformer: 4 enc + 4 dec layers, 6 heads × 64 = model dim 384, FFN 1024, dropout 0.1.
-- Input length: 20 items × (L + 1 suffix) = 80 tokens. Beam size 10–20 at inference. Invalid generations are counted and reported.
+## Default config (paper)
 
-## Ablations (from grading rubric)
+- RQ-VAE: encoder MLP → 32-dim latent, `L=3` codebook levels of `K=256`, suffix token for collisions, VQ-VAE-style commitment loss with EMA codebook updates (the gradient-based variant collapses on Sentence-T5 outputs — see report §5).
+- Transformer: 4 encoder + 4 decoder layers, 6 heads × 64 = model dim 384, FFN 1024, dropout 0.1.
+- Input length: 20 history items × (L + 1 suffix) = 80 tokens. Beam size 10 at inference.
 
-- RQ-VAE: `K ∈ {64, 128, 256}`, `L ∈ {2, 3, 4}` — codebook usage / collision rate.
-- Transformer: hidden size, layers, heads.
-- Beam size at inference.
-- (Optional) cold-start: hold out a fraction of items from training, measure retrieval quality on them.
-
-## Files (planned)
+## Files
 
 ```
 Assignment 3/
 ├── main.py                    # entry point — picks stage and runs it
-├── run_experiments.py         # default + ablations
+├── run_experiments.py         # default + ablation grid
+├── plot_results.py            # generates report/*.pdf figures from results/*.json
+├── notebook.ipynb             # Colab/Kaggle-ready notebook
 ├── requirements.txt
 ├── README.md                  ← you are here
 ├── A3.text                    # raw assignment description from Brightspace
 ├── src/
-│   ├── config.py              # paths, hyperparameters
+│   ├── config.py              # paths + hyperparameters
 │   ├── dataset.py             # Amazon Toys & Games loader, 5-core, sequences, split
 │   ├── content.py             # Sentence-T5 content embeddings (cached)
-│   ├── rqvae.py               # RQ-VAE: encoder + residual quantizer + decoder
+│   ├── rqvae.py               # RQ-VAE: encoder + residual quantizer + decoder + EMA updates
 │   ├── transformer.py         # encoder-decoder Transformer + beam search
-│   ├── train.py               # training loops (RQ-VAE and Transformer)
+│   ├── train.py               # training loops (RQ-VAE: denoising warmup + k-means init + EMA; Transformer: AdamW + warmup-then-inv-sqrt LR)
 │   └── evaluate.py            # full-ranking Recall@{5,10} / NDCG@{5,10}
-├── data/                      # raw dataset (gitignored; lives on Drive in Colab)
+├── tests/
+│   └── test_smoke.py          # quick correctness checks (RQ-VAE recon, beam search, NDCG math)
+├── data/                      # raw dataset, embeddings cache, checkpoints (gitignored)
 ├── results/                   # per-run JSON outputs
-└── report/                    # LaTeX write-up (ACM sigconf, as for A1/A2)
+└── report/
+    ├── report.tex             # ACM sigconf, double-column
+    └── report.pdf             # 3-page compiled report (tectonic)
 ```
 
-## Notes / things to watch for
+## Notes / things that bit us
 
-- **Don't joint-train.** RQ-VAE to convergence first, then freeze and extract Semantic IDs, then train the Transformer. The paper is explicit about this and it's also what worked in the reference implementations.
-- **Cache content embeddings.** Sentence-T5 over ~11K items isn't huge, but it's wasted compute on every Colab restart. Save to `EMB_DIR` once and reload.
-- **Checkpoint every epoch.** Save model + optimizer state to `CKPT_DIR` so a 12h session timeout doesn't cost us a whole run.
-- **Invalid generations.** Beam search can produce Semantic ID tuples that no real item maps to. We need to track the rate and either filter or count them as misses for Recall/NDCG — both are valid as long as we report which.
-- **Sanity check.** Paper-default on Toys & Games should land near NDCG@5 ≈ 0.03–0.04, Recall@5 ≈ 0.05 (full ranking). Orders of magnitude off ⇒ re-check eval protocol and collision handling before tuning.
+- **Don't joint-train.** RQ-VAE to convergence first, then freeze and extract Semantic IDs, then train the Transformer.
+- **Vanilla VQ-VAE collapses on Sentence-T5 outputs.** Sentence-T5 embeddings have a strong global-mean direction (norm ~0.9) that dwarfs per-item variation (~0.4), so a constant encoder + decoder bias hits the variance floor immediately. The fix in `src/rqvae.py` is the combo of (i) input centring, (ii) denoising warmup with Gaussian noise on the centred input, (iii) k-means++ codebook init on warmed-up encoder outputs, (iv) EMA codebook updates with dead-code resetting. With this combo we get 7.7 % collision rate and 99 %+ codebook usage; without it we get a single codeword and 99.9 % collision.
+- **Output buffering hides progress.** Long Python training jobs through `tee` or piped to a Colab/Kaggle console block-buffer their stdout. Prefix with `PYTHONUNBUFFERED=1 stdbuf -oL -eL python -u` to get per-epoch lines flushed live. Our first 30-min Colab run silently completed nothing visible because of this.
+- **Cache content embeddings.** Sentence-T5 over ~11 K items is ~3 min on T4, ~15 min on M1 MPS. The cached `.npy` is reused by every RQ-VAE/Transformer rerun.
+- **Sanity check.** Paper-default on Toys & Games lands near NDCG@5 ≈ 0.03–0.04, Recall@5 ≈ 0.05 (full ranking). Our 30-epoch run with collision rate 7.7 % comes in at NDCG@5 = 0.0150, Recall@5 = 0.0210 — short of the paper but in the right neighbourhood and improving when we stopped (loss was still dropping at epoch 30).
