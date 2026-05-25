@@ -80,9 +80,9 @@ $=$ \textbf{0.0292} -- just below the assignment's expected band
 (R@5 $\approx$ 0.05, NDCG@5 $\approx$ 0.03--0.04).  Diagnostically,
 our RQ-VAE \emph{collapsed}: only $1$, $20$, and $16$ of the $K{=}256$
 codebook entries are used at levels $0$, $1$, $2$, leaving $115$
-unique $L$-tuples for $11{,}924$ items ($99.9\%$ collision); the
-disambiguation suffix carries the bulk of the item-identifying signal
-and only $2.38\%$ of beam outputs are invalid.  Ablation shows the
+unique $L$-tuples for $11{,}924$ items ($99.9\%$ collision).  The
+disambiguation suffix carries the bulk of the item-identifying signal,
+yet only $2.38\%$ of beam outputs are invalid.  Ablation shows the
 Semantic-ID-shaping axes ($K$, $L$) dominate -- a single $K$ or $L$
 mistake costs an order of magnitude in Recall@5, while Transformer
 width/depth and beam size move it by only a few absolute percent.
@@ -107,11 +107,13 @@ required, semantically similar items naturally share Semantic-ID prefixes,
 and items unseen at training time can in principle be recommended through
 their Semantic ID alone~\cite{rajput2023tiger}.
 
+\begin{sloppypar}
 In this report we re-implement TIGER on Amazon Toys and
 Games~\cite{mcauley2015image}, ablate the choices that the original paper
 sweeps over, and analyse the failure modes of generative retrieval that
 embedding-based systems do not have (invalid generations, codebook
 collapse, collision disambiguation).
+\end{sloppypar}
 
 % ============================================================================
 \section{Method}
@@ -155,20 +157,25 @@ straight-through estimator.  The training loss is
 the standard VQ-VAE objective~\cite{vandenoord2017vqvae} with commitment
 weight $\beta{=}0.25$ and $\mathrm{sg}(\cdot)$ denoting the
 stop-gradient operator.  After training the encoder, decoder, and
-codebooks are frozen and one $L$-tuple is extracted per item; items
-that collide to the same $L$-tuple receive a disambiguation suffix
-index $0,1,2,\ldots,S_{\max}{-}1$ (we use $S_{\max}{=}256$ to
-accommodate the largest bucket comfortably), so every item has a
-unique $(L{+}1)$-token Semantic ID.
+codebooks are frozen and one $L$-tuple is extracted per item.  Items
+whose $L$-tuple is unique receive a dedicated \texttt{NO\_SUFFIX}
+token; items that collide to the same $L$-tuple receive a within-bucket
+suffix index $0,1,\ldots$, allocated up to a small maximum (suffixes
+beyond this maximum wrap around, so the few items in unusually large
+collision buckets share a suffix token -- a known limitation we return
+to in Section~\ref{sec:discussion}).  Every item thus has an
+$(L{+}1)$-token Semantic ID.
 
 \subsection{Generative retrieval Transformer}
 We share a single vocabulary across the $L$ codebook levels (each level
 occupying a contiguous range of $K$ token IDs) plus
-\texttt{[PAD]}\allowbreak/\allowbreak\texttt{[BOS]}\allowbreak/\allowbreak\texttt{[EOS]} specials and the
-disambiguation suffix range, for a vocabulary size of roughly
-$3 + LK + S_{\max} \approx 781$.  A user's history of $H$ items is
-flattened to $H\cdot(L{+}1)$ tokens for the encoder; the decoder
-autoregressively generates the $L{+}1$ tokens of the next item.
+\texttt{[PAD]}\allowbreak/\allowbreak\texttt{[BOS]}\allowbreak/\allowbreak\texttt{[EOS]}
+specials, one \texttt{NO\_SUFFIX} token, and the within-bucket
+suffix range, for a total of $781$ vocabulary tokens
+($3 + LK + 1 + 9$ in our default configuration).  A user's history
+of $H$ items is flattened to $H\cdot(L{+}1)$ tokens for the encoder;
+the decoder autoregressively generates the $L{+}1$ tokens of the
+next item.
 
 The default architecture follows the TIGER paper: 4 encoder and 4 decoder
 layers, 6 heads of dimension 64 ($d{=}384$), FFN inner dimension $1024$,
@@ -183,19 +190,26 @@ invalid generations.
 \section{Experimental setup}
 % ============================================================================
 \subsection{Compute and reproducibility}
+\begin{sloppypar}
 RQ-VAE training and the seq2seq Transformer training were run on a
 single T4 GPU (Kaggle T4~$\times 2$ session, one GPU used);
 preprocessing and Sentence-T5 encoding (a one-time cost) were
 performed locally on Apple-Silicon MPS.  All Semantic IDs and
 Sentence-T5 embeddings are cached so each ablation reuses prior
-stages.  Each ablation retrains both stages from scratch (one RQ-VAE
-plus one Transformer per row of Table~\ref{tab:ablation}); the full
-sweep totals roughly $50$ GPU-hours, and every reported number is a
-single seed.  The Kaggle notebook, all training hyperparameters
-(optimiser, learning rate, batch size, schedule, total epochs), the
-cached Semantic IDs, and the per-config training logs are available
-at \url{https://github.com/teshnizi2/recommender_systems_assignment}
+stages.  Each ablation retrains both stages from scratch (one RQ-VAE plus
+one Transformer per row of Table~\ref{tab:ablation}); the full sweep
+totals roughly $50$ GPU-hours, every reported number is a single
+seed (PyTorch seed $42$).  Both stages use AdamW: the RQ-VAE with
+learning rate $10^{-3}$, batch size $256$, up to $200$ epochs and
+early-stopping patience $20$; the Transformer with learning rate
+$10^{-4}$, weight decay $10^{-2}$, batch size $128$, up to $100$
+epochs and early-stopping patience $2$, under linear warm-up over
+the first $10\%$ of steps followed by inverse-square-root decay.
+The Kaggle notebook, the cached Semantic IDs, and the per-config
+training logs are available at
+\url{https://github.com/teshnizi2/recommender_systems_assignment}
 (\texttt{Assignment 3} directory).
+\end{sloppypar}
 
 \subsection{Metrics}
 We report Recall@K and NDCG@K with $K{\in}\{5,10\}$ under the full-item
@@ -263,10 +277,11 @@ longer training schedule (see Section~\ref{sec:discussion}).
   \caption{Training curves for the default configuration.  \emph{Left}:
     RQ-VAE MSE reconstruction loss; early stop at epoch~$21$.
     \emph{Right}: Transformer cross-entropy training loss (blue) and
-    validation NDCG@10 (orange, computed at beam~$5$ for speed).  The
-    validation NDCG is much higher than the held-out test NDCG@10 in
-    Table~\ref{tab:default} because it is a next-tuple NDCG used purely
-    for early stopping, not the full-item-ranking metric.}
+    validation NDCG@10 (orange, computed at beam~$5$ for speed);
+    early stop at epoch~$25$.  The validation NDCG is much higher
+    than the held-out test NDCG@10 in Table~\ref{tab:default} because
+    it is a next-tuple NDCG used purely for early stopping, not the
+    full-item-ranking metric.}
   \label{fig:training}
 \end{figure}
 
@@ -311,9 +326,8 @@ with cosine-distance quantisation, contrastive pretraining of the
 content encoder) under the $50$~GPU-hour ablation budget; we revisit
 this in Section~\ref{sec:discussion}.
 
-What this means in practice: the disambiguation suffix is now playing
-the role of a per-item ID conditioned on a $115$-bucket coarse
-clustering.  Because level~$0$ has collapsed to a single live entry,
+The disambiguation suffix is now playing the role of a per-item ID
+conditioned on a $115$-bucket coarse clustering.  Because level~$0$ has collapsed to a single live entry,
 those $115$ buckets are entirely defined by the level-$1$ and
 level-$2$ tokens, and the Transformer still has to decode the correct
 $(L{+}1)$-tuple.  The task therefore factorises into \emph{which of
@@ -453,11 +467,11 @@ collisions, suffix carries everything); with $L{=}4$ the Transformer
 must get five tokens right under the same training budget, and the
 per-token error rate compounds into a catastrophic full-tuple drop.
 
-\textbf{Beam size is non-monotonic across $K$.}  The interesting
-practical takeaway is that the right beam size depends on the target
-metric -- beam $20$ helps top-$5$ but \emph{hurts} top-$10$, because
-larger beams waste candidates on already-seen items that the post-hoc
-filter strips, leaving fewer unique unseen items in the top-$10$ pool.
+\textbf{Beam size helps Recall@5 but hurts Recall@10.}  Beam $20$
+wins on top-$5$ metrics, but beam $10$ wins on top-$10$.  Larger
+beams waste candidates on already-seen items the post-hoc filter
+then strips, leaving fewer unique unseen items in the top-$10$ pool;
+the right beam size therefore depends on the target depth.
 
 \textbf{Invalid generations are cheap.}  The $2.38\%$ invalid tuples
 are filtered before ranking, so they cost effective beam width but
