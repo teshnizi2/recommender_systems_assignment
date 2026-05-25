@@ -62,46 +62,30 @@
 % ============================================================================
 \begin{abstract}
 We re-implement TIGER~\cite{rajput2023tiger}, a generative-retrieval
-sequential recommender that represents each item as a tuple of discrete
-\emph{Semantic IDs} derived from item content and uses an encoder--decoder
-Transformer to autoregressively generate the Semantic ID of the next item.
-Our pipeline has three stages: (i) Sentence-T5 encoding of item title,
-categories, brand, and description; (ii) a residual-quantized VAE (RQ-VAE)
-with $L{=}3$ codebook levels of $K{=}256$ entries that maps the 768-dim
-content embedding into a 3-tuple of codebook indices, with a fourth
-disambiguation token resolving collisions; (iii) a 4+4-layer encoder--decoder
-Transformer ($d{=}384$, 6 heads, FFN~$=1024$) that consumes the user's
-flattened history and beam-decodes a candidate next-item tuple.
+sequential recommender that represents each item as a tuple of
+discrete \emph{Semantic IDs} and uses an encoder--decoder Transformer
+to autoregressively generate the next item's Semantic ID.  Our
+pipeline: Sentence-T5 content encoding, a residual-quantised VAE
+(RQ-VAE) with $L{=}3$ codebook levels of $K{=}256$ entries plus a
+per-item disambiguation suffix, and a 4+4-layer encoder--decoder
+Transformer that beam-decodes the next item.  We evaluate on the
+Amazon Toys and Games 5-core dump ($19{,}412$ users, $11{,}924$ items)
+under the TIGER full-item-ranking protocol with Recall@\{5,10\} and
+NDCG@\{5,10\}, ablating the RQ-VAE and Transformer axes plus beam
+size.
 
-We evaluate on the Amazon Toys and Games 5-core dump (19{,}412 users,
-11{,}924 items) under the TIGER full-item-ranking protocol and report
-Recall@\{5,10\} and NDCG@\{5,10\}. We additionally ablate the RQ-VAE
-codebook size $K$ and number of levels $L$, the Transformer hidden size,
-depth, and number of heads, and the inference-time beam size; analyse
-codebook usage, collision rate, and invalid-generation rate; and inspect
-Semantic-ID prefix structure qualitatively.
-
-Our default-configuration run (beam~$20$) attains Recall@5 $=$
-\textbf{0.0342}, NDCG@5 $=$ \textbf{0.0245}, Recall@10 $=$ \textbf{0.0488},
-NDCG@10 $=$ \textbf{0.0292} on the held-out test split, sitting just
-below the assignment's expected band (R@5 $\approx$ 0.05,
-NDCG@5 $\approx$ 0.03--0.04); we expect a multi-seed average or a
-longer training schedule to narrow that gap, though our single-seed
-runs cannot confirm by how much.  The headline diagnostic finding
-is that our RQ-VAE \emph{collapsed} on this dataset.  Only $1$,
-$20$, and $16$ of the $K{=}256$ codebook entries are used at
-levels~$0$, $1$, $2$, leaving $115$ unique $L$-tuples for $11{,}924$
-items (a $99.9\%$ collision rate); the disambiguation suffix
-therefore carries the bulk of the item-identifying signal, yet the
-model still reaches the above metrics with only $2.38\%$ invalid
-beam outputs.  Ablating
-the codebook size~$K$, the number of levels~$L$, the Transformer
-width/depth, and the inference beam size shows that the
-Semantic-ID-shaping axes (~$K$,~$L$) dominate: both $L{=}2$ and $L{=}4$
-lose roughly an order of magnitude on Recall@5 relative to the $L{=}3$
-default, and halving $K$ drops Recall@5 by a similar factor, whereas
-Transformer width/depth and beam size move it by only a few absolute
-percent.
+The default run (beam~$20$) attains Recall@5 $=$ \textbf{0.0342},
+NDCG@5 $=$ \textbf{0.0245}, Recall@10 $=$ \textbf{0.0488}, NDCG@10
+$=$ \textbf{0.0292} -- just below the assignment's expected band
+(R@5 $\approx$ 0.05, NDCG@5 $\approx$ 0.03--0.04).  Diagnostically,
+our RQ-VAE \emph{collapsed}: only $1$, $20$, and $16$ of the $K{=}256$
+codebook entries are used at levels $0$, $1$, $2$, leaving $115$
+unique $L$-tuples for $11{,}924$ items ($99.9\%$ collision); the
+disambiguation suffix carries the bulk of the item-identifying signal
+and only $2.38\%$ of beam outputs are invalid.  Ablation shows the
+Semantic-ID-shaping axes ($K$, $L$) dominate -- a single $K$ or $L$
+mistake costs an order of magnitude in Recall@5, while Transformer
+width/depth and beam size move it by only a few absolute percent.
 \end{abstract}
 
 \renewcommand{\shortauthors}{AhmadiTeshnizi, Ichli, and Raju}
@@ -276,18 +260,13 @@ longer training schedule (see Section~\ref{sec:discussion}).
   \centering
   \includegraphics[width=0.48\columnwidth]{figs/rqvae_train_default.png}\hfill
   \includegraphics[width=0.48\columnwidth]{figs/transformer_train_default.png}
-  \caption{Training curves for the default configuration.  Left:
-    RQ-VAE MSE reconstruction loss drops sharply in the first few
-    epochs, plateaus, and triggers early stopping at epoch~$21$
-    (commitment loss is omitted for legibility).  Right: Transformer
-    cross-entropy training loss falls roughly monotonically; the
-    orange curve is validation NDCG@10 computed at beam~$5$ for
-    speed during training.  The absolute level of this validation
-    curve is much higher than the held-out test NDCG@10 reported in
-    Table~\ref{tab:default} because the validation metric is
-    next-tuple NDCG under the seq2seq decoder (used purely for
-    early-stopping), not the full-item-ranking metric used at test
-    time -- only the trend matters for model selection.}
+  \caption{Training curves for the default configuration.  \emph{Left}:
+    RQ-VAE MSE reconstruction loss; early stop at epoch~$21$.
+    \emph{Right}: Transformer cross-entropy training loss (blue) and
+    validation NDCG@10 (orange, computed at beam~$5$ for speed).  The
+    validation NDCG is much higher than the held-out test NDCG@10 in
+    Table~\ref{tab:default} because it is a next-tuple NDCG used purely
+    for early stopping, not the full-item-ranking metric.}
   \label{fig:training}
 \end{figure}
 
@@ -467,29 +446,23 @@ growing $L$ lengthens the per-item token sequence the Transformer
 must get exactly right.  The take-away the paper and our run share is
 that no Transformer width fixes a bad upstream RQ-VAE.
 
-\textbf{Why $L{=}2$ and $L{=}4$ fail so badly.}  $L{=}2$ gives only
-$K^2 \approx 65$~k unique $L$-tuples for $11{,}924$ items, which is
-enough in principle, but the residual quantiser has only two passes
-to absorb a 32-dim latent; in practice many items collide and the
-disambiguation suffix is forced to carry almost all of the
-item-identifying signal.  $L{=}4$ extends the per-item token sequence
-to 5 (up from 4) without giving the Transformer any extra training
-time; because beam search has to get every token right, the per-token
-error rate compounds and a marginally worse per-token model becomes a
-catastrophically worse retriever.
+\textbf{Off-by-one $L$ is asymmetric and brutal.}  The compounding
+mechanism explains why both ends of $L$ fail: with $L{=}2$ the
+quantiser has only two passes to absorb a 32-dim latent (rampant
+collisions, suffix carries everything); with $L{=}4$ the Transformer
+must get five tokens right under the same training budget, and the
+per-token error rate compounds into a catastrophic full-tuple drop.
 
-\textbf{Beam size has a non-monotonic effect.}  Beam~$20$ wins on
-Recall@5/NDCG@5 but beam~$10$ wins on Recall@10/NDCG@10.  The
-mechanism is that a larger beam allocates more candidates to
-already-seen items the post-hoc filter then strips, leaving fewer
-unique unseen candidates in the top-$10$ pool.  In practice, the
-right choice depends on whether the deployment metric is top-5 or
-top-10 quality.
+\textbf{Beam size is non-monotonic across $K$.}  The interesting
+practical takeaway is that the right beam size depends on the target
+metric -- beam $20$ helps top-$5$ but \emph{hurts} top-$10$, because
+larger beams waste candidates on already-seen items that the post-hoc
+filter strips, leaving fewer unique unseen items in the top-$10$ pool.
 
-\textbf{Invalid generations stay low.}  At beam~$20$ the model emits
-about $2.38\%$ of tuples that map to no real item.  These are filtered
-out before ranking, so they cost effective beam width but not
-Recall/NDCG directly.
+\textbf{Invalid generations are cheap.}  The $2.38\%$ invalid tuples
+are filtered before ranking, so they cost effective beam width but
+not Recall/NDCG directly -- the model's failure mode is collision,
+not invalidity.
 
 \textbf{What we would do with another week.}
 (i)~Fix the codebook collapse.  This is the single change most likely
