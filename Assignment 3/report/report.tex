@@ -76,14 +76,14 @@ size.
 
 The default run (beam~$20$) attains Recall@5 $=$ \textbf{0.0342},
 NDCG@5 $=$ \textbf{0.0245}, Recall@10 $=$ \textbf{0.0488}, NDCG@10
-$=$ \textbf{0.0292} -- just below the assignment's expected band
-(R@5 $\approx$ 0.05, NDCG@5 $\approx$ 0.03--0.04).  Diagnostically,
-our RQ-VAE \emph{collapsed}: only $1$, $20$, and $16$ of the $K{=}256$
+$=$ \textbf{0.0292}, just below the assignment's expected band
+(R@5 $\approx$ 0.05, NDCG@5 $\approx$ 0.03--0.04).  On inspection,
+our RQ-VAE \emph{collapsed}. Only $1$, $20$, and $16$ of the $K{=}256$
 codebook entries are used at levels $0$, $1$, $2$, leaving $115$
 unique $L$-tuples for $11{,}924$ items ($99.9\%$ collision).  The
 disambiguation suffix carries the bulk of the item-identifying signal,
 yet only $2.38\%$ of beam outputs are invalid.  Ablation shows the
-Semantic-ID-shaping axes ($K$, $L$) dominate -- a single $K$ or $L$
+Semantic-ID-shaping axes ($K$, $L$) dominate. A single $K$ or $L$
 mistake costs an order of magnitude in Recall@5, while Transformer
 width/depth and beam size move it by only a few absolute percent.
 \end{abstract}
@@ -97,7 +97,7 @@ width/depth and beam size move it by only a few absolute percent.
 % ============================================================================
 Sequential recommendation predicts the next item a user will interact with
 given their chronological history.  Modern systems such as SASRec~\cite{kang2018sasrec}
-score items via dense dot-products in an embedding space; at serving time
+score items via dense dot-products in an embedding space. At serving time
 this is paired with approximate nearest-neighbor search to remain
 tractable.  TIGER takes a different route: each item is assigned a tuple
 of discrete tokens (its \emph{Semantic ID}), derived from its content
@@ -108,7 +108,7 @@ and items unseen at training time can in principle be recommended through
 their Semantic ID alone~\cite{rajput2023tiger}.
 
 \begin{sloppypar}
-In this report we re-implement TIGER on Amazon Toys and
+We re-implement TIGER on Amazon Toys and
 Games~\cite{mcauley2015image}, ablate the choices that the original paper
 sweeps over, and analyse the failure modes of generative retrieval that
 embedding-based systems do not have (invalid generations, codebook
@@ -138,7 +138,7 @@ to disk so re-runs and ablations avoid the encoding step.
 \subsection{RQ-VAE for Semantic IDs}
 The RQ-VAE compresses each 768-dim content vector into an $L$-tuple of
 discrete codebook indices.  An MLP encoder $f_\theta$ produces a latent
-$\mathbf{z}\in\mathbb{R}^{32}$; the residual quantizer iterates
+$\mathbf{z}\in\mathbb{R}^{32}$. The residual quantizer iterates
 \[
   c_\ell = \arg\min_{k}\Big\lVert \mathbf{r}_{\ell-1} - \mathbf{e}^\ell_k \Big\rVert^2,\quad
   \mathbf{r}_\ell = \mathbf{r}_{\ell-1} - \mathbf{e}^\ell_{c_\ell},
@@ -159,10 +159,10 @@ weight $\beta{=}0.25$ and $\mathrm{sg}(\cdot)$ denoting the
 stop-gradient operator.  After training the encoder, decoder, and
 codebooks are frozen and one $L$-tuple is extracted per item.  Items
 whose $L$-tuple is unique receive a dedicated \texttt{NO\_SUFFIX}
-token; items that collide to the same $L$-tuple receive a within-bucket
+token. Items that collide to the same $L$-tuple receive a within-bucket
 suffix index $0,1,\ldots$, allocated up to a small maximum (suffixes
 beyond this maximum wrap around, so the few items in unusually large
-collision buckets share a suffix token -- a known limitation we return
+collision buckets share a suffix token, a known limitation we return
 to in Section~\ref{sec:discussion}).  Every item thus has an
 $(L{+}1)$-token Semantic ID.
 
@@ -173,8 +173,8 @@ occupying a contiguous range of $K$ token IDs) plus
 specials, one \texttt{NO\_SUFFIX} token, and the within-bucket
 suffix range, for a total of $781$ vocabulary tokens
 ($3 + LK + 1 + 9$ in our default configuration).  A user's history
-of $H$ items is flattened to $H\cdot(L{+}1)$ tokens for the encoder;
-the decoder autoregressively generates the $L{+}1$ tokens of the
+of $H$ items is flattened to $H\cdot(L{+}1)$ tokens for the encoder.
+The decoder autoregressively generates the $L{+}1$ tokens of the
 next item.
 
 The default architecture follows the TIGER paper: 4 encoder and 4 decoder
@@ -182,7 +182,7 @@ layers, 6 heads of dimension 64 ($d{=}384$), FFN inner dimension $1024$,
 dropout~$0.1$, learned token and positional embeddings.  Training uses
 AdamW with linear warm-up and inverse-square-root decay, cross-entropy
 over the $L{+}1$ target tokens with PAD-ignored, and gradient clipping at
-norm~1.  At inference we use beam search with beam size~20; tuples whose
+norm~1.  At inference we use beam search with beam size~20. Tuples whose
 decoded sequence does not map to any real item are counted as
 invalid generations.
 
@@ -192,16 +192,16 @@ invalid generations.
 \subsection{Compute and reproducibility}
 \begin{sloppypar}
 RQ-VAE training and the seq2seq Transformer training were run on a
-single T4 GPU (Kaggle T4~$\times 2$ session, one GPU used);
-preprocessing and Sentence-T5 encoding (a one-time cost) were
+single T4 GPU (Kaggle T4~$\times 2$ session, one GPU used).
+Preprocessing and Sentence-T5 encoding (a one-time cost) were
 performed locally on Apple-Silicon MPS.  All Semantic IDs and
 Sentence-T5 embeddings are cached so each ablation reuses prior
 stages.  Each ablation retrains both stages from scratch (one RQ-VAE plus
-one Transformer per row of Table~\ref{tab:ablation}); the full sweep
-totals roughly $50$ GPU-hours, every reported number is a single
-seed (PyTorch seed $42$).  Both stages use AdamW: the RQ-VAE with
+one Transformer per row of Table~\ref{tab:ablation}).  The full sweep
+totals roughly $50$ GPU-hours, and every reported number is a single
+seed (PyTorch seed $42$).  Both stages use AdamW.  The RQ-VAE runs with
 learning rate $10^{-3}$, batch size $256$, up to $200$ epochs and
-early-stopping patience $20$; the Transformer with learning rate
+early-stopping patience $20$.  The Transformer runs with learning rate
 $10^{-4}$, weight decay $10^{-2}$, batch size $128$, up to $100$
 epochs and early-stopping patience $2$, under linear warm-up over
 the first $10\%$ of steps followed by inverse-square-root decay.
@@ -212,22 +212,25 @@ training logs are available at
 \end{sloppypar}
 
 \subsection{Metrics}
+\begin{sloppypar}
 We report Recall@K and NDCG@K with $K{\in}\{5,10\}$ under the full-item
 ranking protocol: items the user has already interacted with (other than
 the held-out target) are removed from the beam-decoded candidate list
 before ranking.  We additionally report
 \begin{itemize}
 \item \textbf{Codebook usage} per RQ-VAE level (fraction of codebook
-  entries used in training);
+  entries used in training).
 \item \textbf{Collision rate} (fraction of items sharing an $L$-tuple
-  with at least one other item);
+  with at least one other item).
 \item \textbf{Invalid-generation rate} (fraction of beam outputs whose
   $(L{+}1)$-tuple maps to no real item).
 \end{itemize}
+\end{sloppypar}
 
 \subsection{Configurations}
-\textbf{Default.}  $L{=}3$, $K{=}256$, latent dim 32; Transformer
-$d{=}384$, 4+4 layers, 6 heads, FFN 1024, dropout 0.1; beam size 20.
+\begin{sloppypar}
+\textbf{Default.}  $L{=}3$, $K{=}256$, latent dim 32.  Transformer
+$d{=}384$, 4+4 layers, 6 heads, FFN 1024, dropout 0.1.  Beam size 20.
 
 \textbf{Ablations.}  One-axis-at-a-time around the default:
 codebook size $K \in \{64, 128, 256\}$ (with $L{=}3$),
@@ -235,6 +238,7 @@ number of levels $L \in \{2, 3, 4\}$ (with $K{=}256$),
 Transformer architecture $(d, \text{heads}, \text{layers})
 \in \{(256{,}4{,}4),\allowbreak\ (384{,}6{,}4),\allowbreak\ (384{,}6{,}6)\}$, and inference beam size
 $\in \{10, 20\}$.
+\end{sloppypar}
 
 % ============================================================================
 \section{Results}
@@ -250,10 +254,10 @@ Figure~\ref{fig:training}.
 \begin{table}[h]
   \centering
   \small
+  \setlength{\tabcolsep}{4pt}
   \caption{Default-config test metrics on Amazon Toys and Games
-    ($N{=}19{,}412$ users, beam~$20$).  Invalid generation rate
-    is the fraction of beam-decoded $(L{+}1)$-tuples that map to no
-    real item.}
+    ($N{=}19{,}412$ users, beam~$20$).  Invalid rate is the fraction
+    of beam-decoded $(L{+}1)$-tuples mapping to no real item.}
   \label{tab:default}
   \begin{tabular}{lccccc}
     \toprule
@@ -275,9 +279,9 @@ longer training schedule (see Section~\ref{sec:discussion}).
   \includegraphics[width=0.48\columnwidth]{figs/rqvae_train_default.png}\hfill
   \includegraphics[width=0.48\columnwidth]{figs/transformer_train_default.png}
   \caption{Training curves for the default configuration.  \emph{Left}:
-    RQ-VAE MSE reconstruction loss; early stop at epoch~$21$.
+    RQ-VAE MSE reconstruction loss, with early stop at epoch~$21$.
     \emph{Right}: Transformer cross-entropy training loss (blue) and
-    validation NDCG@10 (orange, computed at beam~$5$ for speed);
+    validation NDCG@10 (orange, computed at beam~$5$ for speed), with
     early stop at epoch~$25$.  The validation NDCG is much higher
     than the held-out test NDCG@10 in Table~\ref{tab:default} because
     it is a next-tuple NDCG used purely for early stopping, not the
@@ -290,7 +294,7 @@ longer training schedule (see Section~\ref{sec:discussion}).
 Our default $K{=}256$, $L{=}3$ RQ-VAE suffers severe codebook
 collapse on this dataset (Figure~\ref{fig:codebook}, left): only
 $1$, $20$, and $16$ of the $256$ codebook entries are ever assigned
-at levels~$0$, $1$, and~$2$ respectively -- per-level utilisations of
+at levels~$0$, $1$, and~$2$ respectively, with per-level utilisations of
 $0.4\%$, $7.8\%$, and $6.3\%$.  As a consequence the three RQ-VAE
 tokens produce only $115$ unique $L$-tuples for the $11{,}924$ items
 in the catalogue (Figure~\ref{fig:codebook}, right): $11{,}911$
@@ -303,7 +307,7 @@ get a globally unique three-token prefix.
   \includegraphics[width=0.48\columnwidth]{figs/collision_L3_K256.png}
   \caption{Default RQ-VAE diagnostics.  Left: only $1$, $20$, and
     $16$ of the $K{=}256$ codebook entries are used at levels~$0$,
-    $1$, $2$ -- the codebook collapsed on this dataset.  Right: of
+    $1$, $2$, indicating that the codebook collapsed on this dataset.  Right: of
     the $11{,}924$ items, $99.9\%$ collide on their three-token
     Semantic-ID prefix and only $13$ are globally unique without the
     disambiguation suffix.}
@@ -312,18 +316,18 @@ get a globally unique three-token prefix.
 
 \begin{sloppypar}
 The collapse is consistent with the well-known interaction between
-gradient-based VQ-VAEs and strongly anisotropic encoder outputs --
+gradient-based VQ-VAEs and strongly anisotropic encoder outputs.
 Sentence-T5 on a small catalogue produces a low-effective-rank
 embedding cloud, and the encoder converges to a near-constant latent
 that a handful of codebook entries are sufficient to reconstruct.
-\end{sloppypar}  We
-applied the standard mitigations -- EMA codebook updates with
+We applied the standard mitigations (EMA codebook updates with
 commitment weight~$\beta{=}0.25$~\cite{vandenoord2017vqvae}, small
 uniform codebook initialisation, dead-code resets, and a denoising
-warmup -- and the codebook still narrowed.  We did not run the more
+warmup) and the codebook still narrowed.
+\end{sloppypar}  We did not run the more
 involved alternatives (k-means initialisation on a sub-sampled batch
 with cosine-distance quantisation, contrastive pretraining of the
-content encoder) under the $50$~GPU-hour ablation budget; we revisit
+content encoder) under the $50$~GPU-hour ablation budget.  We revisit
 this in Section~\ref{sec:discussion}.
 
 The disambiguation suffix is now playing the role of a per-item ID
@@ -342,7 +346,7 @@ that property to break at larger scale.
 \subsection{Ablations}
 We ablate one axis at a time around the default
 (Table~\ref{tab:ablation} and Figure~\ref{fig:ablation}).  All numbers
-are from a single seed per configuration; each row retrains both the
+are from a single seed per configuration. Each row retrains both the
 RQ-VAE and the Transformer end-to-end.
 
 \begin{table}[h]
@@ -380,7 +384,7 @@ RQ-VAE and the Transformer end-to-end.
   \includegraphics[width=\columnwidth]{figs/ablation_all_metrics.png}
   \caption{All four metrics for the eight configurations in
     Table~\ref{tab:ablation}.  RQ-VAE axis ($K$, $L$) is overwhelmingly
-    the most sensitive; Transformer width/depth and beam size move the
+    the most sensitive. Transformer width/depth and beam size move the
     numbers by a few absolute percent.}
   \label{fig:ablation}
 \end{figure}
@@ -390,15 +394,15 @@ RQ-VAE and the Transformer end-to-end.
 $0.034$ to $\sim 0.004$.  The mechanism is twofold: a smaller $K$
 gives only $K^L$ unique $L$-tuples ($64^3 = 262$~k, more than enough
 for $11{,}924$ items in principle), but in practice the RQ-VAE assigns
-many items to the same tuple -- collision rate explodes, the
+many items to the same tuple. Collision rate explodes, the
 disambiguation suffix has to do all the work, and the Transformer can
 no longer encode useful information into the first $L$ tokens.
 
 \textbf{Number of levels $L$.}  $L{=}3$ is a sweet spot.  $L{=}2$ has
 only $K^2 \approx 65$~k unique IDs and offers no hierarchy for the
-decoder to exploit; $L{=}4$ extends the per-item token sequence from
+decoder to exploit. $L{=}4$ extends the per-item token sequence from
 4 to 5 and the model fails to converge on the longer Semantic ID
-within the same step budget -- the per-token error rate compounds, so
+within the same step budget. The per-token error rate compounds, so
 a small per-token regression magnifies into a large drop in full-tuple
 accuracy.  Both off-by-one settings cost Recall@5 by an order of
 magnitude.
@@ -406,15 +410,15 @@ magnitude.
 \textbf{Transformer architecture.}  Within reasonable bounds the
 architecture matters little: $(d{=}256, 4~\text{heads}, 4~\text{layers})$
 is within plausible seed noise of the default
-(R@5 $0.0345$ vs $0.0342$; we run a single seed per configuration so
-cannot claim significance), and going deeper to $6$ layers actually
+(R@5 $0.0345$ vs $0.0342$). We run a single seed per configuration, so
+we cannot claim statistical significance, and going deeper to $6$ layers actually
 hurts mildly (Recall@5 $0.0288$ vs $0.0342$).
 The most plausible explanation is that the deeper model is
-undertrained under our compute budget -- it has more parameters but
+undertrained under our compute budget. It has more parameters but
 sees the same fixed number of optimisation steps as the default.
 
 \textbf{Beam size.}  Dropping beam from $20$ to $10$ slightly hurts
-Recall@5 ($0.0334$ vs $0.0342$) but \emph{improves} Recall@10
+Recall@5 ($0.0334$ vs $0.0342$). It \emph{improves} Recall@10
 ($0.0552$ vs $0.0488$).  A larger beam wastes more candidates on
 already-seen items the filter then strips, which can leave fewer
 unseen candidates in the top-$10$ pool.  We report numbers under the
@@ -424,13 +428,13 @@ matches the paper's protocol.
 \subsection{Qualitative analysis of Semantic IDs}
 \label{sec:qual}
 We inspected prefix-clustering on an earlier training checkpoint of
-the same default configuration -- before the codebook had narrowed
-to its final state (Section~\ref{sec:codebook}) -- because the
+the same default configuration (before the codebook had narrowed
+to its final state, see Section~\ref{sec:codebook}), because the
 fully-trained codebook is too collapsed to give meaningful level-0
 clusters.  On that checkpoint a representative level-0 token grouped
 $\sim\!900$ items dominated by strategy/D\&D board games
 (\textit{Wrath of Ashardalon}, \textit{Lords of Waterdeep},
-\textit{Ticket to Ride}, \textit{Shadows over Camelot}); the deeper
+\textit{Ticket to Ride}, \textit{Shadows over Camelot}). The deeper
 two-token prefix narrowed this further to Wizards-of-the-Coast-style
 boxed games (\textit{Munchkin}, \textit{Eminent Domain},
 \textit{Fortune and Glory}).  This is the qualitative pattern the
@@ -453,9 +457,9 @@ set by the RQ-VAE, the Transformer's job becomes routine sequence
 prediction.  Our reproduction reaches a similar conclusion through a
 different route.  Because our RQ-VAE collapsed
 (Section~\ref{sec:codebook}), what $K$ and $L$ actually control in
-our run is the \emph{size and shape of the disambiguation problem}:
-at $K{=}256, L{=}3$ the suffix has to distinguish items inside one
-of $115$ buckets; halving $K$ shrinks the bucket count further, and
+our run is the \emph{size and shape of the disambiguation problem}.
+At $K{=}256, L{=}3$ the suffix has to distinguish items inside one
+of $115$ buckets. Halving $K$ shrinks the bucket count further, and
 growing $L$ lengthens the per-item token sequence the Transformer
 must get exactly right.  The take-away the paper and our run share is
 that no Transformer width fixes a bad upstream RQ-VAE.
@@ -463,37 +467,35 @@ that no Transformer width fixes a bad upstream RQ-VAE.
 \textbf{Off-by-one $L$ is asymmetric and brutal.}  The compounding
 mechanism explains why both ends of $L$ fail: with $L{=}2$ the
 quantiser has only two passes to absorb a 32-dim latent (rampant
-collisions, suffix carries everything); with $L{=}4$ the Transformer
+collisions, suffix carries everything). With $L{=}4$ the Transformer
 must get five tokens right under the same training budget, and the
 per-token error rate compounds into a catastrophic full-tuple drop.
 
 \textbf{Beam size helps Recall@5 but hurts Recall@10.}  Beam $20$
-wins on top-$5$ metrics, but beam $10$ wins on top-$10$.  Larger
+wins on top-$5$ metrics. Beam $10$ wins on top-$10$.  Larger
 beams waste candidates on already-seen items the post-hoc filter
-then strips, leaving fewer unique unseen items in the top-$10$ pool;
-the right beam size therefore depends on the target depth.
+then strips, leaving fewer unique unseen items in the top-$10$ pool.
+The right beam size therefore depends on the target depth.
 
 \textbf{Invalid generations are cheap.}  The $2.38\%$ invalid tuples
 are filtered before ranking, so they cost effective beam width but
-not Recall/NDCG directly -- the model's failure mode is collision,
+not Recall/NDCG directly. The model's failure mode is collision,
 not invalidity.
 
 \textbf{What we would do with another week.}
 (i)~Fix the codebook collapse.  This is the single change most likely
 to lift Recall@5 toward the upper $0.04$s reported by the paper.
 The minimal viable next experiment is k-means initialisation on a
-sub-sampled batch combined with cosine-distance quantisation; the
+sub-sampled batch combined with cosine-distance quantisation. The
 larger lever is replacing Sentence-T5 with a less anisotropic
 encoder (e.g.\ E5 or a contrastive-pretrained variant).
-(ii)~Multiple seeds.  Several gaps we report -- e.g.\ the
-$(d{=}256, h{=}4)$ vs default difference -- are within plausible seed
-noise; an averaged-over-seeds table would let us claim what is
+(ii)~Multiple seeds.  Several gaps we report, for example the
+$(d{=}256, h{=}4)$ versus default difference, are within plausible seed
+noise. An averaged-over-seeds table would let us claim what is
 significant.
-(iii)~A cosine learning-rate schedule with a longer warm-up, which is
-the more standard choice for sequence models of this size.
-(iv)~Cold-start evaluation: hold out a small fraction of items from
+(iii)~Cold-start evaluation: hold out a small fraction of items from
 training entirely and measure whether the Transformer can still
-recover them via prefix similarity alone -- a headline advantage of
+recover them via prefix similarity alone, a headline advantage of
 Semantic-ID retrieval over embedding-based retrieval that we did not
 have budget to evaluate here.
 
@@ -504,17 +506,17 @@ have budget to evaluate here.
 We re-implemented TIGER end-to-end in PyTorch and trained it on the
 Amazon Toys and Games 5-core dump, reaching \textbf{Recall@10~$=$~$0.0488$}
 and \textbf{NDCG@10~$=$~$0.0292$} on the held-out test split with
-beam~$20$ -- just below the assignment's expected band.  Two findings
+beam~$20$, just below the assignment's expected band.  Two findings
 matter beyond the headline numbers.  First, ablating $K$, $L$,
 Transformer architecture, and beam size shows that the
-Semantic-ID-shaping decisions ($K$ and $L$) dominate -- a single
+Semantic-ID-shaping decisions ($K$ and $L$) dominate. A single
 codebook-size or level mistake costs an order of magnitude in
 Recall@5, while doubling Transformer depth or width moves the metric
 by only a few absolute percent.  Second, despite severe codebook
 collapse on this dataset ($115$ unique three-token prefixes for
-$11{,}924$ items; Section~\ref{sec:codebook}), the disambiguation
+$11{,}924$ items, see Section~\ref{sec:codebook}), the disambiguation
 suffix is enough for the Transformer to recover competitive
-retrieval; the prefix-clustering pattern TIGER relies on is visible
+retrieval. The prefix-clustering pattern TIGER relies on is visible
 only on earlier, less-collapsed training checkpoints
 (Section~\ref{sec:qual}) and has not survived in our final model.
 Addressing the collapse with stronger anti-collapse mitigations or a
